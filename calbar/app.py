@@ -1,4 +1,5 @@
 import logging
+import threading
 from collections import defaultdict
 from datetime import datetime, date, timedelta
 
@@ -26,12 +27,20 @@ class CalBarApp(rumps.App):
         self.current_view_date: date = date.today()
         self.title = "\U0001f4c5 取得中..."
 
+        # バックグラウンドスレッド → メインスレッド間のイベント受け渡し
+        self._pending_events: list[Event] | None = None
+        self._events_lock = threading.Lock()
+
         # コンポーネント初期化
         self.notifier = Notifier(self.config)
-        self.fetch_scheduler = FetchScheduler(self.config, self._on_events_updated)
+        self.fetch_scheduler = FetchScheduler(self.config, self._on_events_fetched)
 
         # 初回取得
         self.fetch_scheduler.run_fetch()
+
+        # メインスレッドで保留中の更新をポーリング（1秒間隔）
+        self._poll_timer = rumps.Timer(self._poll_pending_events, 1)
+        self._poll_timer.start()
 
         # 定期更新タイマー
         self.fetch_timer = rumps.Timer(
@@ -43,8 +52,24 @@ class CalBarApp(rumps.App):
         self.title_timer = rumps.Timer(self._update_title, 60)
         self.title_timer.start()
 
-    def _on_events_updated(self, events: list[Event]):
-        """予定取得完了時のコールバック"""
+    def _on_events_fetched(self, events: list[Event]):
+        """予定取得完了時のコールバック（バックグラウンドスレッドから呼ばれる）
+
+        UI 更新はメインスレッド (AppKit) で行う必要があるため、
+        ここではデータを保持するだけで、_poll_pending_events が処理する。
+        """
+        with self._events_lock:
+            self._pending_events = events
+
+    def _poll_pending_events(self, _=None):
+        """メインスレッドで保留中の予定更新を適用"""
+        with self._events_lock:
+            events = self._pending_events
+            self._pending_events = None
+
+        if events is None:
+            return
+
         # 日付ごとにグループ化
         day_events: dict[date, list[Event]] = defaultdict(list)
         for event in events:
@@ -63,10 +88,7 @@ class CalBarApp(rumps.App):
 
         # 当日の通知をスケジュール
         today = date.today()
-        today_events = []
-        for event in events:
-            if event.start_time.date() == today:
-                today_events.append(event)
+        today_events = [e for e in events if e.start_time.date() == today]
         self.notifier.schedule_notifications(today_events)
 
         logger.info(f"予定を更新しました: {len(events)} 件")
