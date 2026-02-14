@@ -15,6 +15,26 @@ logger = logging.getLogger(__name__)
 
 CALENDAR_URL = "https://calendar.google.com"
 WEEK_VIEW_URL = "https://calendar.google.com/calendar/r/week"
+# Google Calendar へのアクセスを前提とした認証 URL
+# 未認証時に calendar.google.com を開くと商品紹介ページにリダイレクトされるため、
+# accounts.google.com 経由で認証後に Calendar へ遷移させる
+AUTH_URL = (
+    "https://accounts.google.com/ServiceLogin"
+    "?continue=https://calendar.google.com/calendar/r/week"
+)
+
+
+def _remove_singleton_lock(profile_path: str) -> None:
+    """Chrome の SingletonLock を削除する。
+
+    persistent context を使う場合、Chrome が正常終了しないと
+    SingletonLock が残り次回起動が失敗するため、起動前に削除する。
+    """
+    lock = os.path.join(profile_path, "SingletonLock")
+    try:
+        os.remove(lock)
+    except FileNotFoundError:
+        pass
 
 
 async def is_authenticated(page: Page) -> bool:
@@ -30,15 +50,21 @@ async def authenticate(config: AppConfig):
     """未認証時にヘッド付きブラウザを起動しユーザーに手動ログインさせる"""
     profile_path = os.path.expanduser(config.browser_profile_path)
     os.makedirs(profile_path, exist_ok=True)
+    _remove_singleton_lock(profile_path)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=profile_path,
             headless=False,
-            args=["--window-size=800,600"],
+            channel="chrome",
+            args=[
+                "--window-size=800,600",
+                "--disable-blink-features=AutomationControlled",
+            ],
+            ignore_default_args=["--enable-automation"],
         )
         page = browser.pages[0] if browser.pages else await browser.new_page()
-        await page.goto(CALENDAR_URL)
+        await page.goto(AUTH_URL)
 
         logger.info("ブラウザでGoogleアカウントにログインしてください...")
 
@@ -267,11 +293,15 @@ async def fetch_events(config: AppConfig) -> list[Event]:
     """1 週間分の予定を取得"""
     profile_path = os.path.expanduser(config.browser_profile_path)
     os.makedirs(profile_path, exist_ok=True)
+    _remove_singleton_lock(profile_path)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=profile_path,
             headless=True,
+            channel="chrome",
+            args=["--disable-blink-features=AutomationControlled"],
+            ignore_default_args=["--enable-automation"],
         )
         page = browser.pages[0] if browser.pages else await browser.new_page()
 

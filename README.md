@@ -38,6 +38,7 @@ Playwright で Google カレンダーから予定を取得し、次のミーテ�
 
 - macOS 12 (Monterey) 以降
 - Python 3.11+
+- Google Chrome（Playwright がシステム Chrome を使用）
 - [terminal-notifier](https://github.com/julienXX/terminal-notifier)（推奨、なくても動作可）
 
 ## セットアップ
@@ -50,13 +51,10 @@ Playwright で Google カレンダーから予定を取得し、次のミーテ�
 # 1. リポジトリのクローン
 git clone <repo-url> && cd google-calender-schedule-notification
 
-# 2. Playwright ブラウザインストール（初回のみ）
-uv run --with playwright playwright install chromium
-
-# 3. terminal-notifier（通知用、推奨）
+# 2. terminal-notifier（通知用、推奨）
 brew install terminal-notifier
 
-# 4. 起動
+# 3. 起動
 uv run calbar/main.py
 ```
 
@@ -74,21 +72,20 @@ source .venv/bin/activate
 # 3. 依存パッケージ
 pip install -r requirements.txt
 
-# 4. Playwright ブラウザインストール
-playwright install chromium
-
-# 5. terminal-notifier（通知用、推奨）
+# 4. terminal-notifier（通知用、推奨）
 brew install terminal-notifier
 
-# 6. 起動
+# 5. 起動
 python main.py
 ```
+
+> **Note:** `playwright install` は不要です。`channel="chrome"` 指定によりシステムの Google Chrome を直接使用します。
 
 ## 初回起動時の認証
 
 初回起動時、Google アカウントへのログインが必要です。
 
-1. アプリが自動で Chromium ブラウザを可視モードで起動します
+1. アプリがシステムの Google Chrome を可視モードで起動します
 2. 表示されたブラウザで Google アカウントにログインしてください
 3. Google カレンダーが表示されたら認証完了です（ブラウザは自動で閉じます）
 4. 以降はセッションが `~/.calbar/browser_profile` に保存され、再認証なしで動作します
@@ -137,7 +134,7 @@ python setup.py py2app
 |---------|------|
 | 言語 | Python 3.11+ |
 | メニューバー UI | [rumps](https://github.com/jaredks/rumps) |
-| カレンダー取得 | [Playwright](https://playwright.dev/python/) (Chromium) |
+| カレンダー取得 | [Playwright](https://playwright.dev/python/) (システム Chrome) |
 | 通知 | terminal-notifier / osascript フォールバック |
 | データ永続化 | JSON ファイル (`~/.calbar/`) |
 | パッケージング | py2app |
