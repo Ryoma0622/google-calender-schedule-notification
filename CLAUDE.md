@@ -17,10 +17,9 @@ Playwright で Google Calendar をスクレイピングし、rumps でメニュ�
 ```bash
 # uv で起動（依存は PEP 723 インラインメタデータから自動解決）
 uv run calbar/main.py
-
-# Playwright ブラウザの初回インストール
-uv run --with playwright playwright install chromium
 ```
+
+`playwright install` は不要（`channel="chrome"` でシステムの Google Chrome を使用）。
 
 ### 手動 venv の場合
 
@@ -29,7 +28,6 @@ cd calbar
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
 python main.py
 ```
 
@@ -56,7 +54,8 @@ main.py → app.py (CalBarApp: rumps.App)
 ## 重要な設計判断
 
 - Google Calendar の DOM はクラス名が動的ハッシュのため、`aria-label`・`data-*`・`role` 属性をセレクタの基軸にする
-- 認証状態は Chromium の persistent context（`~/.calbar/browser_profile`）で永続化
+- Playwright バンドル版 Chromium では Google ログインがブロックされるため、`channel="chrome"` でシステム Chrome を使用
+- 認証状態は Chrome の persistent context（`~/.calbar/browser_profile`）で永続化
 - Playwright の操作はバックグラウンドスレッドで非同期実行し、rumps のメインループをブロックしない
 - ネットワーク障害時はキャッシュから予定を読み込む
 - 通知は terminal-notifier を優先し、未インストール時は osascript にフォールバック
@@ -69,7 +68,7 @@ main.py → app.py (CalBarApp: rumps.App)
 |---------|------|
 | `config.json` | ユーザー設定 |
 | `cache.json` | 予定のキャッシュ（オフライン用） |
-| `browser_profile/` | Chromium セッション（認証永続化） |
+| `browser_profile/` | Chrome セッション（認証永続化） |
 | `calbar.log` | アプリケーションログ |
 
 ## コーディング規約

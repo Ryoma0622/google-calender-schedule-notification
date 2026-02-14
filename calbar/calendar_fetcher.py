@@ -35,6 +35,7 @@ async def authenticate(config: AppConfig):
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=profile_path,
             headless=False,
+            channel="chrome",
             args=["--window-size=800,600"],
         )
         page = browser.pages[0] if browser.pages else await browser.new_page()
@@ -272,6 +273,7 @@ async def fetch_events(config: AppConfig) -> list[Event]:
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=profile_path,
             headless=True,
+            channel="chrome",
         )
         page = browser.pages[0] if browser.pages else await browser.new_page()
 
