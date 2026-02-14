@@ -42,6 +42,26 @@ Playwright で Google カレンダーから予定を取得し、次のミーテ�
 
 ## セットアップ
 
+### uv を使う場合（推奨）
+
+依存関係は PEP 723 インラインメタデータで `main.py` に記述済みのため、`uv run` だけで起動できます。
+
+```bash
+# 1. リポジトリのクローン
+git clone <repo-url> && cd google-calender-schedule-notification
+
+# 2. Playwright ブラウザインストール（初回のみ）
+uv run --with playwright playwright install chromium
+
+# 3. terminal-notifier（通知用、推奨）
+brew install terminal-notifier
+
+# 4. 起動
+uv run calbar/main.py
+```
+
+### 手動 venv の場合
+
 ```bash
 # 1. リポジトリのクローン
 git clone <repo-url> && cd google-calender-schedule-notification

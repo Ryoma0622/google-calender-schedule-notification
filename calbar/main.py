@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "rumps>=0.4.0",
+#     "playwright>=1.40.0",
+# ]
+# ///
 """CalBar - macOS メニューバー Google カレンダー通知アプリ"""
 
 import logging

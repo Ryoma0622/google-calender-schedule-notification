@@ -12,7 +12,17 @@ Playwright で Google Calendar をスクレイピングし、rumps でメニュ�
 - `calbar/` — アプリケーション本体
 - `spec.md` — 設計書（要件定義・機能設計の原本）
 
-## 開発環境セットアップ
+## 開発環境セットアップ・起動
+
+```bash
+# uv で起動（依存は PEP 723 インラインメタデータから自動解決）
+uv run calbar/main.py
+
+# Playwright ブラウザの初回インストール
+uv run --with playwright playwright install chromium
+```
+
+### 手動 venv の場合
 
 ```bash
 cd calbar
@@ -20,12 +30,6 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
-```
-
-## 起動
-
-```bash
-cd calbar
 python main.py
 ```
 
