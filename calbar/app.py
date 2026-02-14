@@ -23,7 +23,7 @@ class CalBarApp(rumps.App):
     def __init__(self):
         super().__init__(
             "CalBar",
-            title="\U0001f4c5 ...",
+            title="...",
             quit_button=None,
         )
         self.config = load_config()
@@ -256,7 +256,7 @@ class CalBarApp(rumps.App):
         today_schedule = self.events.get(now.date())
 
         if not today_schedule:
-            self.title = "\U0001f4c5 --"
+            self.title = "--"
             self._force_status_item_refresh()
             return
 
@@ -274,7 +274,7 @@ class CalBarApp(rumps.App):
             remaining = self._format_remaining_compact(minutes_until)
             self.title = self._build_menubar_title(time_str, remaining)
         else:
-            self.title = "\U0001f4c5 --"
+            self.title = "--"
 
         self._force_status_item_refresh()
 
@@ -302,12 +302,13 @@ class CalBarApp(rumps.App):
     def _build_menubar_title(self, time_str: str, remaining: str) -> str:
         """幅に応じて段階的に短縮し、トップバーで消えにくいタイトルを返す。"""
         candidates = [
-            f"\U0001f4c5 {time_str} {remaining}",
-            f"\U0001f4c5 {time_str}",
-            "\U0001f4c5",
+            f"{time_str}\u00b7{remaining}",
+            f"{time_str}-{remaining}",
+            time_str,
+            "Cal",
         ]
         for candidate in candidates:
-            if self._display_width(candidate) <= 14:
+            if self._display_width(candidate) <= 12:
                 return candidate
         return candidates[-1]
 
@@ -336,7 +337,7 @@ class CalBarApp(rumps.App):
 
     def _manual_refresh(self, _):
         """手動で予定を更新"""
-        self.title = "\U0001f4c5 ..."
+        self.title = "..."
         self._force_status_item_refresh()
         self.fetch_scheduler.run_fetch()
 
