@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 from collections import defaultdict
 from datetime import datetime, date, timedelta
@@ -11,7 +12,6 @@ from notifier import Notifier
 from scheduler import FetchScheduler
 from utils import (
     format_date_ja,
-    format_minutes_remaining,
     open_url,
     truncate_title,
 )
@@ -21,11 +21,17 @@ logger = logging.getLogger(__name__)
 
 class CalBarApp(rumps.App):
     def __init__(self):
-        super().__init__("\U0001f4c5", quit_button=None)
+        super().__init__(
+            "CalBar",
+            title="\U0001f4c5 取得中",
+            quit_button=None,
+        )
         self.config = load_config()
         self.events: dict[date, DaySchedule] = {}
         self.current_view_date: date = date.today()
-        self.title = "\U0001f4c5 取得中..."
+        self._started = False
+        self._status_backend_logged = False
+        self._status_refresh_count = 0
 
         # バックグラウンドスレッド → メインスレッド間のイベント受け渡し
         self._pending_events: list[Event] | None = None
@@ -35,22 +41,95 @@ class CalBarApp(rumps.App):
         self.notifier = Notifier(self.config)
         self.fetch_scheduler = FetchScheduler(self.config, self._on_events_fetched)
 
-        # 初回取得
-        self.fetch_scheduler.run_fetch()
+        # 初期メニューを構築（起動直後に空メニューにならないようにする）
+        self._build_menu()
 
-        # メインスレッドで保留中の更新をポーリング（1秒間隔）
+        # 起動後に開始するタイマー（run loop が開始するまでは start しない）
         self._poll_timer = rumps.Timer(self._poll_pending_events, 1)
-        self._poll_timer.start()
-
-        # 定期更新タイマー
         self.fetch_timer = rumps.Timer(
             self._on_fetch_timer, self.config.fetch_interval_minutes * 60
         )
-        self.fetch_timer.start()
-
-        # メニューバータイトル更新タイマー（1分ごと）
         self.title_timer = rumps.Timer(self._update_title, 60)
+
+        # rumps の run loop 起動後に初回取得とタイマー開始を行う
+        rumps.events.before_start(self._on_before_start)
+
+    def _on_before_start(self):
+        """run loop 開始直前（メインスレッド）に初期化処理を開始"""
+        if self._started:
+            return
+        self._started = True
+        logger.info("メニューバー初期化完了。タイマーと予定取得を開始します")
+
+        self._poll_timer.start()
+        self.fetch_timer.start()
         self.title_timer.start()
+        self._force_status_item_refresh()
+        self.fetch_scheduler.run_fetch()
+
+    def _force_status_item_refresh(self):
+        """ステータスアイテム表示を AppKit に直接再反映する。
+
+        一部環境では rumps の setTitle_ 経由反映が表示に出ないケースがあるため、
+        NSStatusItem.button() が利用可能ならこちらにもタイトルを明示セットする。
+        """
+        nsapp = getattr(self, "_nsapp", None)
+        if nsapp is None or not hasattr(nsapp, "nsstatusitem"):
+            return
+
+        status_item = nsapp.nsstatusitem
+        title = self.title or ""
+        display_title = "●" if os.getenv("CALBAR_DEBUG_DOT_TITLE") == "1" else title
+        try:
+            if hasattr(status_item, "button"):
+                button = status_item.button()
+            else:
+                button = None
+
+            if button is not None:
+                button.setTitle_(display_title)
+                if not button.title() and not button.image():
+                    button.setTitle_(self.name)
+                if hasattr(button, "setToolTip_"):
+                    button.setToolTip_(title)
+                if not self._status_backend_logged:
+                    logger.info("ステータス表示: NSStatusItem.button() 経由で反映")
+                    self._status_backend_logged = True
+            else:
+                status_item.setTitle_(display_title)
+                if not status_item.title() and not status_item.image():
+                    status_item.setTitle_(self.name)
+                if not self._status_backend_logged:
+                    logger.info("ステータス表示: NSStatusItem 直接 API で反映")
+                    self._status_backend_logged = True
+
+            if hasattr(status_item, "setVisible_"):
+                status_item.setVisible_(True)
+
+            self._status_refresh_count += 1
+            if self._status_refresh_count <= 3:
+                visible = (
+                    status_item.isVisible()
+                    if hasattr(status_item, "isVisible")
+                    else "n/a"
+                )
+                length = (
+                    status_item.length() if hasattr(status_item, "length") else "n/a"
+                )
+                current_title = (
+                    button.title()
+                    if button is not None and hasattr(button, "title")
+                    else status_item.title()
+                )
+                logger.info(
+                    "ステータス反映確認: count=%s visible=%s length=%s title=%s",
+                    self._status_refresh_count,
+                    visible,
+                    length,
+                    current_title,
+                )
+        except Exception:
+            logger.exception("ステータスアイテムの表示再反映に失敗しました")
 
     def _on_events_fetched(self, events: list[Event]):
         """予定取得完了時のコールバック（バックグラウンドスレッドから呼ばれる）
@@ -175,7 +254,8 @@ class CalBarApp(rumps.App):
         today_schedule = self.events.get(now.date())
 
         if not today_schedule:
-            self.title = "\U0001f4c5 \u672c\u65e5\u306e\u4e88\u5b9a\u7d42\u4e86"
+            self.title = "\U0001f4c5 予定なし"
+            self._force_status_item_refresh()
             return
 
         next_event = None
@@ -189,13 +269,30 @@ class CalBarApp(rumps.App):
                 (next_event.start_time - now).total_seconds() / 60
             )
             title_text = truncate_title(
-                next_event.title, self.config.max_title_length_menubar
+                next_event.title,
+                min(self.config.max_title_length_menubar, 10),
             )
             time_str = next_event.start_time.strftime("%H:%M")
-            remaining = format_minutes_remaining(minutes_until)
+            remaining = self._format_remaining_compact(minutes_until)
             self.title = f"\U0001f4c5 {time_str} {title_text} ({remaining})"
         else:
-            self.title = "\U0001f4c5 \u672c\u65e5\u306e\u4e88\u5b9a\u7d42\u4e86"
+            self.title = "\U0001f4c5 予定なし"
+
+        self._force_status_item_refresh()
+
+    def _format_remaining_compact(self, minutes: int) -> str:
+        """トップバー向けに残り時間を短く表示する。"""
+        if minutes < 0:
+            return "live"
+        if minutes == 0:
+            return "soon"
+        if minutes < 60:
+            return f"{minutes}m"
+        hours = minutes // 60
+        rem = minutes % 60
+        if rem == 0:
+            return f"{hours}h"
+        return f"{hours}h{rem}m"
 
     def _open_meeting(self, event: Event):
         """会議 URL をブラウザで開く"""
@@ -222,7 +319,8 @@ class CalBarApp(rumps.App):
 
     def _manual_refresh(self, _):
         """手動で予定を更新"""
-        self.title = "\U0001f4c5 \u53d6\u5f97\u4e2d..."
+        self.title = "\U0001f4c5 取得中"
+        self._force_status_item_refresh()
         self.fetch_scheduler.run_fetch()
 
     def _open_settings(self, _):
@@ -275,5 +373,6 @@ class CalBarApp(rumps.App):
 
     def _quit_app(self, _):
         """アプリ終了"""
+        rumps.events.before_start.unregister(self._on_before_start)
         self.notifier.cancel_all()
         rumps.quit_application()
