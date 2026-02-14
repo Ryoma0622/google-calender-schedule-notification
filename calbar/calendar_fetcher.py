@@ -24,6 +24,19 @@ AUTH_URL = (
 )
 
 
+def _remove_singleton_lock(profile_path: str) -> None:
+    """Chrome の SingletonLock を削除する。
+
+    persistent context を使う場合、Chrome が正常終了しないと
+    SingletonLock が残り次回起動が失敗するため、起動前に削除する。
+    """
+    lock = os.path.join(profile_path, "SingletonLock")
+    try:
+        os.remove(lock)
+    except FileNotFoundError:
+        pass
+
+
 async def is_authenticated(page: Page) -> bool:
     """Google Calendar のメインビューが表示されているか判定"""
     try:
@@ -37,6 +50,7 @@ async def authenticate(config: AppConfig):
     """未認証時にヘッド付きブラウザを起動しユーザーに手動ログインさせる"""
     profile_path = os.path.expanduser(config.browser_profile_path)
     os.makedirs(profile_path, exist_ok=True)
+    _remove_singleton_lock(profile_path)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch_persistent_context(
@@ -279,6 +293,7 @@ async def fetch_events(config: AppConfig) -> list[Event]:
     """1 週間分の予定を取得"""
     profile_path = os.path.expanduser(config.browser_profile_path)
     os.makedirs(profile_path, exist_ok=True)
+    _remove_singleton_lock(profile_path)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch_persistent_context(
