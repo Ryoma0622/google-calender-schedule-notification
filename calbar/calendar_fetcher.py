@@ -304,7 +304,7 @@ async def fetch_events(config: AppConfig) -> list[Event]:
         page = browser.pages[0] if browser.pages else await browser.new_page()
 
         try:
-            await page.goto(WEEK_VIEW_URL, wait_until="networkidle")
+            await page.goto(WEEK_VIEW_URL, wait_until="domcontentloaded")
 
             if not await is_authenticated(page):
                 await browser.close()
