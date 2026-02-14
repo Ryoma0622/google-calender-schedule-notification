@@ -59,6 +59,7 @@ def parse_event_from_dom_data(
     event_date: date,
     detail_text: str = "",
     location: str = "",
+    calendar_name: str = "",
     is_all_day: bool = False,
 ) -> Event:
     """DOM から取得した生データを Event オブジェクトに変換"""
@@ -85,4 +86,5 @@ def parse_event_from_dom_data(
         location=location.strip() if location else None,
         meeting_url=meeting_url,
         description=detail_text.strip() if detail_text else None,
+        calendar_name=calendar_name.strip() if calendar_name else None,
     )

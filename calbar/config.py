@@ -10,6 +10,7 @@ DEFAULT_CONFIG = {
     "notification_minutes_before": 5,
     "fetch_interval_minutes": 5,
     "show_all_day_events": True,
+    "show_only_own_calendar": True,
     "max_title_length_menubar": 30,
 }
 
@@ -33,6 +34,7 @@ def save_config(config: AppConfig):
                 "notification_minutes_before": config.notification_minutes_before,
                 "fetch_interval_minutes": config.fetch_interval_minutes,
                 "show_all_day_events": config.show_all_day_events,
+                "show_only_own_calendar": config.show_only_own_calendar,
                 "max_title_length_menubar": config.max_title_length_menubar,
             },
             f,

@@ -2,10 +2,11 @@ import asyncio
 import logging
 import os
 import re
+import unicodedata
 from datetime import datetime, date, timedelta
 from typing import Optional
 
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import async_playwright, Page
 
 from models import AppConfig, Event
 from event_parser import parse_event_from_dom_data
@@ -39,6 +40,44 @@ TIME_RANGE_PATTERN = re.compile(
     r"|(?:(?:午前|午後)\s*)?\d{1,2}時(?:\d{1,2}分?)?"
     r")"
 )
+
+WEEKDAY_TOKENS = {
+    "月",
+    "火",
+    "水",
+    "木",
+    "金",
+    "土",
+    "日",
+    "月曜日",
+    "火曜日",
+    "水曜日",
+    "木曜日",
+    "金曜日",
+    "土曜日",
+    "日曜日",
+}
+NON_CALENDAR_TOKENS = {
+    "場所の指定なし",
+    "場所なし",
+    "no location",
+    "location",
+    "場所",
+    "予定",
+    "event",
+}
+NORMALIZED_NON_CALENDAR_TOKENS = {
+    re.sub(r"\s+", "", unicodedata.normalize("NFKC", token).strip().lower())
+    for token in NON_CALENDAR_TOKENS
+}
+ACCOUNT_LABEL_SELECTORS = [
+    'a[aria-label*="Google アカウント"]',
+    'button[aria-label*="Google アカウント"]',
+    '[aria-label*="Google アカウント"]',
+    'a[aria-label*="Google Account"]',
+    'button[aria-label*="Google Account"]',
+    '[aria-label*="Google Account"]',
+]
 
 
 def _remove_singleton_lock(profile_path: str) -> None:
@@ -174,16 +213,17 @@ async def _extract_all_day_events(page: Page, week_dates: list[date]) -> list[Ev
             aria_label = text_content
 
         if aria_label:
-            # 終日イベントの場合
-            title = aria_label.strip()
+            quoted_title = re.search(r"「([^」]+)」", aria_label)
+            title = quoted_title.group(1).strip() if quoted_title else aria_label.strip()
             # タイトルから時刻情報がなければ終日イベントと判定
-            time_pattern = re.compile(r'\d{1,2}:\d{2}')
-            if not time_pattern.search(title):
+            if not _extract_time_info(aria_label):
+                calendar_name = _extract_calendar_name_from_label(aria_label, title)
                 for d in week_dates:
                     events.append(parse_event_from_dom_data(
                         title=title,
                         time_info="",
                         event_date=d,
+                        calendar_name=calendar_name or "",
                         is_all_day=True,
                     ))
                 break  # 重複防止
@@ -267,12 +307,142 @@ def _parse_aria_label(label: str, week_dates: list[date]) -> Optional[Event]:
 
     # 日付を推定
     event_date = _extract_date_from_label(label, week_dates)
+    calendar_name = _extract_calendar_name_from_label(label, title)
 
     return parse_event_from_dom_data(
         title=title,
         time_info=time_info,
         event_date=event_date,
+        calendar_name=calendar_name or "",
     )
+
+
+def _split_label_tokens(text: str) -> list[str]:
+    return [token.strip() for token in re.split(r"[、,]", text) if token.strip()]
+
+
+def _normalize_identity(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).strip().lower()
+    normalized = re.sub(r"\s+", "", normalized)
+    normalized = normalized.removesuffix("さん")
+    normalized = normalized.removesuffix("様")
+    return normalized
+
+
+def _clean_label_token(token: str) -> str:
+    cleaned = token.strip().strip("「」\"'[]()（）")
+    cleaned = re.sub(r"^(?:カレンダー|calendar)[:：]\s*", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def _looks_like_calendar_name(token: str, title: str) -> bool:
+    if not token:
+        return False
+    if token in WEEKDAY_TOKENS:
+        return False
+    if _extract_time_info(token):
+        return False
+    if re.search(r"\d{4}年\s*\d{1,2}月\s*\d{1,2}日", token):
+        return False
+    if re.search(r"\d{1,2}月\s*\d{1,2}日", token):
+        return False
+    if _normalize_identity(token) == _normalize_identity(title):
+        return False
+    if _normalize_identity(token) in NORMALIZED_NON_CALENDAR_TOKENS:
+        return False
+    return True
+
+
+def _extract_calendar_name_from_label(label: str, title: str) -> Optional[str]:
+    candidates: list[str] = []
+
+    quoted_title_span = re.search(r"「[^」]+」", label)
+    if quoted_title_span:
+        candidates.extend(_split_label_tokens(label[quoted_title_span.end():]))
+    else:
+        tokens = _split_label_tokens(label)
+        title_norm = _normalize_identity(title)
+        title_index = -1
+        for i, token in enumerate(tokens):
+            if _normalize_identity(_clean_label_token(token)) == title_norm:
+                title_index = i
+                break
+        if title_index >= 0:
+            candidates.extend(tokens[title_index + 1:])
+        else:
+            candidates.extend(tokens)
+
+    for candidate in candidates:
+        cleaned = _clean_label_token(candidate)
+        if _looks_like_calendar_name(cleaned, title):
+            return cleaned
+    return None
+
+
+def _extract_aliases_from_account_label(label: str) -> tuple[Optional[str], set[str]]:
+    display_name: Optional[str] = None
+    aliases: set[str] = set()
+
+    name_match = re.search(
+        r"Google(?:\s*アカウント|\s*Account)[:：]\s*([^\(（,、]+)",
+        label,
+        flags=re.IGNORECASE,
+    )
+    if name_match:
+        display_name = name_match.group(1).strip()
+        normalized = _normalize_identity(display_name)
+        if normalized:
+            aliases.add(normalized)
+
+    email_match = re.search(
+        r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+        label,
+    )
+    if email_match:
+        email = email_match.group(1).strip()
+        normalized_email = _normalize_identity(email)
+        if normalized_email:
+            aliases.add(normalized_email)
+            aliases.add(normalized_email.split("@", 1)[0])
+        if display_name is None:
+            display_name = email
+
+    return display_name, aliases
+
+
+async def _extract_own_calendar_aliases(page: Page) -> tuple[Optional[str], set[str]]:
+    seen_labels: set[str] = set()
+    for selector in ACCOUNT_LABEL_SELECTORS:
+        elements = await page.query_selector_all(selector)
+        for element in elements[:5]:
+            label = (await element.get_attribute("aria-label") or "").strip()
+            if not label or label in seen_labels:
+                continue
+            seen_labels.add(label)
+            display_name, aliases = _extract_aliases_from_account_label(label)
+            if aliases:
+                return display_name, aliases
+    return None, set()
+
+
+def _is_own_calendar_event(event: Event, own_aliases: set[str]) -> bool:
+    calendar_name = (event.calendar_name or "").strip()
+    if not calendar_name:
+        # カレンダー名を取れないケースは誤除外を避けて残す
+        return True
+
+    normalized_calendar = _normalize_identity(calendar_name)
+    if not normalized_calendar:
+        return True
+
+    if normalized_calendar in own_aliases:
+        return True
+
+    for alias in own_aliases:
+        if normalized_calendar.startswith(alias + "（") or normalized_calendar.startswith(alias + "("):
+            return True
+
+    return False
 
 
 def _extract_time_span(label: str) -> Optional[tuple[int, int]]:
@@ -511,41 +681,85 @@ async def fetch_events(config: AppConfig) -> list[Event]:
             await page.wait_for_timeout(2000)
 
             events: list[Event] = []
+            all_day_events: list[Event] = []
             timed_event_pairs: list[tuple[Event, object]] = []
             last_data_eventid_count = 0
+            own_calendar_display_name: Optional[str] = None
+            own_calendar_aliases: set[str] = set()
+
+            if config.show_only_own_calendar:
+                own_calendar_display_name, own_calendar_aliases = await _extract_own_calendar_aliases(page)
+                if own_calendar_aliases:
+                    logger.info(
+                        "自分のカレンダー限定フィルタを有効化: %s",
+                        own_calendar_display_name or "アカウント名未取得",
+                    )
+                else:
+                    logger.warning(
+                        "自分のカレンダー名を取得できなかったため、限定フィルタをスキップします"
+                    )
 
             # Google Calendar は描画が遅れることがあるため、0件時は再試行する
             for attempt in range(1, 4):
                 # 週の日付を取得
                 week_dates = await _extract_week_dates(page)
                 events = []
+                all_day_events = []
+                timed_events: list[Event] = []
+                parsed_event_count = 0
 
                 # 終日イベントの取得
                 try:
                     all_day_events = await _extract_all_day_events(page, week_dates)
-                    events.extend(all_day_events)
                 except Exception as e:
                     logger.warning(f"終日イベント取得失敗: {e}")
+                    all_day_events = []
 
                 # 時間指定イベントの取得
                 try:
                     timed_event_pairs = await _extract_timed_events(page, week_dates)
                     timed_events = [event for event, _ in timed_event_pairs]
-                    events.extend(timed_events)
                 except Exception as e:
                     logger.warning(f"時間指定イベント取得失敗: {e}")
                     timed_events = []
                     timed_event_pairs = []
 
+                timed_event_count_raw = len(timed_events)
+                parsed_event_count = len(all_day_events) + len(timed_events)
+
+                if config.show_only_own_calendar and own_calendar_aliases:
+                    before_filter_count = parsed_event_count
+                    all_day_events = [
+                        event
+                        for event in all_day_events
+                        if _is_own_calendar_event(event, own_calendar_aliases)
+                    ]
+                    timed_event_pairs = [
+                        (event, element)
+                        for event, element in timed_event_pairs
+                        if _is_own_calendar_event(event, own_calendar_aliases)
+                    ]
+                    timed_events = [event for event, _ in timed_event_pairs]
+                    after_filter_count = len(all_day_events) + len(timed_events)
+                    if before_filter_count != after_filter_count:
+                        logger.info(
+                            "自分のカレンダー限定で %d 件を除外しました (attempt=%d)",
+                            before_filter_count - after_filter_count,
+                            attempt,
+                        )
+
+                events.extend(all_day_events)
+                events.extend(timed_events)
+
                 last_data_eventid_count = await page.locator('[data-eventid]').count()
                 logger.info(
                     "時間指定イベント解析: %d 件 (data-eventid=%d, attempt=%d)",
-                    len(timed_events),
+                    timed_event_count_raw,
                     last_data_eventid_count,
                     attempt,
                 )
 
-                if events:
+                if parsed_event_count > 0:
                     break
 
                 if attempt < 3:
@@ -556,7 +770,9 @@ async def fetch_events(config: AppConfig) -> list[Event]:
                     await page.reload(wait_until="domcontentloaded")
                     await page.wait_for_timeout(2000)
 
-            if not events:
+            if not events and config.show_only_own_calendar and own_calendar_aliases:
+                logger.info("自分のカレンダーに該当する予定はありませんでした")
+            elif not events:
                 logger.warning(
                     "再試行後も0件でした (data-eventid=%d)。",
                     last_data_eventid_count,

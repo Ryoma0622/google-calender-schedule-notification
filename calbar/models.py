@@ -40,4 +40,5 @@ class AppConfig:
     cache_path: str = "~/.calbar/cache.json"
     config_path: str = "~/.calbar/config.json"
     show_all_day_events: bool = True
+    show_only_own_calendar: bool = True
     max_title_length_menubar: int = 30  # メニューバー表示のタイトル文字数上限
