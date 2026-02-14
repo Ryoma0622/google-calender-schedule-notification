@@ -56,7 +56,6 @@ async def authenticate(config: AppConfig):
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=profile_path,
             headless=False,
-            channel="chrome",
             args=[
                 "--window-size=800,600",
                 "--disable-blink-features=AutomationControlled",
@@ -299,7 +298,6 @@ async def fetch_events(config: AppConfig) -> list[Event]:
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=profile_path,
             headless=True,
-            channel="chrome",
             args=["--disable-blink-features=AutomationControlled"],
             ignore_default_args=["--enable-automation"],
         )
