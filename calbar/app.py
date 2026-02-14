@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import unicodedata
 from collections import defaultdict
 from datetime import datetime, date, timedelta
 
@@ -13,7 +14,6 @@ from scheduler import FetchScheduler
 from utils import (
     format_date_ja,
     open_url,
-    truncate_title,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class CalBarApp(rumps.App):
     def __init__(self):
         super().__init__(
             "CalBar",
-            title="\U0001f4c5 取得中",
+            title="\U0001f4c5 ...",
             quit_button=None,
         )
         self.config = load_config()
@@ -65,7 +65,6 @@ class CalBarApp(rumps.App):
         self.fetch_timer.start()
         self.title_timer.start()
         self._force_status_item_refresh()
-        self.fetch_scheduler.run_fetch()
 
     def _force_status_item_refresh(self):
         """ステータスアイテム表示を AppKit に直接再反映する。
@@ -105,6 +104,9 @@ class CalBarApp(rumps.App):
 
             if hasattr(status_item, "setVisible_"):
                 status_item.setVisible_(True)
+            if hasattr(status_item, "setLength_"):
+                # 長いタイトルで項目ごと消えるのを避けるため固定幅にする。
+                status_item.setLength_(96.0)
 
             self._status_refresh_count += 1
             if self._status_refresh_count <= 3:
@@ -254,7 +256,7 @@ class CalBarApp(rumps.App):
         today_schedule = self.events.get(now.date())
 
         if not today_schedule:
-            self.title = "\U0001f4c5 予定なし"
+            self.title = "\U0001f4c5 --"
             self._force_status_item_refresh()
             return
 
@@ -268,15 +270,11 @@ class CalBarApp(rumps.App):
             minutes_until = int(
                 (next_event.start_time - now).total_seconds() / 60
             )
-            title_text = truncate_title(
-                next_event.title,
-                min(self.config.max_title_length_menubar, 10),
-            )
             time_str = next_event.start_time.strftime("%H:%M")
             remaining = self._format_remaining_compact(minutes_until)
-            self.title = f"\U0001f4c5 {time_str} {title_text} ({remaining})"
+            self.title = self._build_menubar_title(time_str, remaining)
         else:
-            self.title = "\U0001f4c5 予定なし"
+            self.title = "\U0001f4c5 --"
 
         self._force_status_item_refresh()
 
@@ -293,6 +291,25 @@ class CalBarApp(rumps.App):
         if rem == 0:
             return f"{hours}h"
         return f"{hours}h{rem}m"
+
+    def _display_width(self, text: str) -> int:
+        """メニューバー幅判定用の概算表示幅（全角=2, 半角=1）。"""
+        width = 0
+        for ch in text:
+            width += 2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1
+        return width
+
+    def _build_menubar_title(self, time_str: str, remaining: str) -> str:
+        """幅に応じて段階的に短縮し、トップバーで消えにくいタイトルを返す。"""
+        candidates = [
+            f"\U0001f4c5 {time_str} {remaining}",
+            f"\U0001f4c5 {time_str}",
+            "\U0001f4c5",
+        ]
+        for candidate in candidates:
+            if self._display_width(candidate) <= 14:
+                return candidate
+        return candidates[-1]
 
     def _open_meeting(self, event: Event):
         """会議 URL をブラウザで開く"""
@@ -319,7 +336,7 @@ class CalBarApp(rumps.App):
 
     def _manual_refresh(self, _):
         """手動で予定を更新"""
-        self.title = "\U0001f4c5 取得中"
+        self.title = "\U0001f4c5 ..."
         self._force_status_item_refresh()
         self.fetch_scheduler.run_fetch()
 

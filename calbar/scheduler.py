@@ -15,9 +15,17 @@ class FetchScheduler:
     def __init__(self, config: AppConfig, on_events_updated: Callable[[list[Event]], None]):
         self.config = config
         self.on_events_updated = on_events_updated
+        self._state_lock = threading.Lock()
+        self._is_fetching = False
 
     def run_fetch(self):
         """バックグラウンドスレッドで Playwright 取得を実行"""
+        with self._state_lock:
+            if self._is_fetching:
+                logger.info("予定取得をスキップ: 前回の取得処理がまだ実行中です")
+                return
+            self._is_fetching = True
+
         thread = threading.Thread(target=self._fetch_thread, daemon=True)
         thread.start()
 
@@ -34,6 +42,9 @@ class FetchScheduler:
                 self.on_events_updated(cached)
             else:
                 logger.warning("キャッシュデータがありません")
+        finally:
+            with self._state_lock:
+                self._is_fetching = False
 
     def _cache_events(self, events: list[Event]):
         """取得結果を JSON キャッシュに保存"""

@@ -14,13 +14,30 @@ from utils import extract_meeting_url
 logger = logging.getLogger(__name__)
 
 CALENDAR_URL = "https://calendar.google.com"
-WEEK_VIEW_URL = "https://calendar.google.com/calendar/r/week"
+WEEK_VIEW_URLS = [
+    # 複数アカウント利用時に /r/week だと空カレンダーを開く場合があるため、
+    # まず primary account (/u/0) を優先する。
+    "https://calendar.google.com/calendar/u/0/r/week",
+    "https://calendar.google.com/calendar/r/week",
+]
 # Google Calendar へのアクセスを前提とした認証 URL
 # 未認証時に calendar.google.com を開くと商品紹介ページにリダイレクトされるため、
 # accounts.google.com 経由で認証後に Calendar へ遷移させる
 AUTH_URL = (
     "https://accounts.google.com/ServiceLogin"
-    "?continue=https://calendar.google.com/calendar/r/week"
+    "?continue=https://calendar.google.com/calendar/u/0/r/week"
+)
+
+TIME_RANGE_PATTERN = re.compile(
+    r"(?P<start>"
+    r"(?:(?:午前|午後)\s*)?\d{1,2}(?::\d{2})?(?:\s*(?:AM|PM|am|pm))?"
+    r"|(?:(?:午前|午後)\s*)?\d{1,2}時(?:\d{1,2}分?)?"
+    r")"
+    r"\s*[–—-～〜]\s*"
+    r"(?P<end>"
+    r"(?:(?:午前|午後)\s*)?\d{1,2}(?::\d{2})?(?:\s*(?:AM|PM|am|pm))?"
+    r"|(?:(?:午前|午後)\s*)?\d{1,2}時(?:\d{1,2}分?)?"
+    r")"
 )
 
 
@@ -103,6 +120,41 @@ async def _extract_week_dates(page: Page) -> list[date]:
     return sorted(dates)
 
 
+async def _open_best_week_view(page: Page) -> str:
+    """週ビュー URL を順に試し、イベント要素を検出できる URL を選ぶ。"""
+    selected_url = WEEK_VIEW_URLS[0]
+    selected_count = -1
+
+    for url in WEEK_VIEW_URLS:
+        await page.goto(url, wait_until="domcontentloaded")
+        try:
+            await page.wait_for_selector('[data-eventid]', timeout=5000)
+        except Exception:
+            # イベントがない週でもタイムアウトはあり得る
+            pass
+        await page.wait_for_timeout(500)
+
+        if not await is_authenticated(page):
+            continue
+
+        count = await page.locator('[data-eventid]').count()
+        logger.info("週ビュー候補: %s (data-eventid=%d)", url, count)
+
+        if count > selected_count:
+            selected_url = url
+            selected_count = count
+
+        if count > 0:
+            return url
+
+    # 最有力 URL を再度開いてから呼び出し元へ返す
+    if page.url != selected_url:
+        await page.goto(selected_url, wait_until="domcontentloaded")
+        await page.wait_for_timeout(1500)
+
+    return selected_url
+
+
 async def _extract_all_day_events(page: Page, week_dates: list[date]) -> list[Event]:
     """終日イベント領域から終日予定を抽出"""
     events = []
@@ -151,48 +203,61 @@ async def _extract_timed_events(page: Page, week_dates: list[date]) -> list[Even
 
     processed_labels = set()
 
-    for element in event_elements:
-        aria_label = await element.get_attribute('aria-label') or ''
-        if not aria_label:
-            aria_label = await element.text_content() or ''
+    parse_failed_labels: list[str] = []
 
-        aria_label = aria_label.strip()
-        if not aria_label or aria_label in processed_labels:
+    for element in event_elements:
+        label = await element.get_attribute('aria-label') or ''
+        if not label:
+            label = await element.text_content() or ''
+
+        label = label.strip()
+        if not label or label in processed_labels:
             continue
-        processed_labels.add(aria_label)
+        processed_labels.add(label)
 
         # aria-label パターン: "イベントタイトル, 2月14日 金曜日, 9:00～10:00"
         # または: "9:00 - 10:00, イベントタイトル"
-        event_data = _parse_aria_label(aria_label, week_dates)
+        event_data = _parse_aria_label(label, week_dates)
         if event_data:
             events.append(event_data)
+        elif len(parse_failed_labels) < 3:
+            parse_failed_labels.append(label[:200])
+
+    if not events and parse_failed_labels:
+        logger.warning(
+            "時間指定イベントの解析に失敗しました。ラベル例: %s",
+            " | ".join(parse_failed_labels),
+        )
 
     return events
 
 
 def _parse_aria_label(label: str, week_dates: list[date]) -> Optional[Event]:
     """aria-label テキストからイベント情報をパース"""
-    # 時刻パターン
-    time_range_pattern = re.compile(
-        r'(\d{1,2}:\d{2})\s*[–—-～〜]\s*(\d{1,2}:\d{2})'
-    )
-    time_match = time_range_pattern.search(label)
-
-    if not time_match:
+    time_info = _extract_time_info(label)
+    if not time_info:
         return None
 
-    time_info = f"{time_match.group(1)} - {time_match.group(2)}"
+    time_span = _extract_time_span(label)
 
-    # タイトル抽出: 時刻部分を除いた残りからタイトルを取得
-    title = label
-    # 時刻部分を除去
-    title = time_range_pattern.sub('', title)
-    # 日付部分を除去（例: "2月14日 金曜日"）
-    date_pattern = re.compile(r'\d{1,2}月\d{1,2}日\s*[月火水木金土日]曜日?')
-    title = date_pattern.sub('', title)
-    # カンマや余分な空白を除去
-    title = re.sub(r'[,、]\s*', ' ', title).strip()
-    title = re.sub(r'\s+', ' ', title).strip()
+    # タイトル抽出: 「...」があれば最優先
+    quoted_title = re.search(r"「([^」]+)」", label)
+    if quoted_title:
+        title = quoted_title.group(1).strip()
+    else:
+        title = label
+        # 時刻部分を除去
+        if time_span:
+            start, end = time_span
+            title = (title[:start] + " " + title[end:]).strip()
+        # 日付部分を除去（例: "2026年 2月 15日", "2月14日 金曜日"）
+        title = re.sub(r"\d{4}年\s*\d{1,2}月\s*\d{1,2}日", " ", title)
+        title = re.sub(r"\d{1,2}月\s*\d{1,2}日\s*[月火水木金土日]曜日?", " ", title)
+        # カレンダー補助文言を除去
+        title = re.sub(r"(場所の指定なし|No location)", " ", title, flags=re.IGNORECASE)
+        # カンマや余分な空白を除去
+        title = re.sub(r"[,、]\s*", " ", title).strip()
+        title = re.sub(r"\s+", " ", title).strip()
 
     if not title:
         title = "（タイトルなし）"
@@ -207,10 +272,102 @@ def _parse_aria_label(label: str, week_dates: list[date]) -> Optional[Event]:
     )
 
 
+def _extract_time_span(label: str) -> Optional[tuple[int, int]]:
+    """ラベル内の時刻範囲の位置を返す。"""
+    match = TIME_RANGE_PATTERN.search(label)
+    if not match:
+        return None
+    return match.span()
+
+
+def _extract_time_info(label: str) -> Optional[str]:
+    """ラベルから時刻範囲を HH:MM - HH:MM 形式で返す。"""
+    match = TIME_RANGE_PATTERN.search(label)
+    if not match:
+        return None
+
+    start_raw = match.group("start")
+    end_raw = match.group("end")
+
+    start_norm, start_meridiem = _normalize_time_token(start_raw)
+    if not start_norm:
+        return None
+
+    end_norm, _ = _normalize_time_token(end_raw, fallback_meridiem=start_meridiem)
+    if not end_norm:
+        return None
+
+    return f"{start_norm} - {end_norm}"
+
+
+def _normalize_time_token(
+    token: str,
+    fallback_meridiem: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """時刻トークンを 24 時間の HH:MM に正規化する。"""
+    value = token.strip()
+    meridiem: Optional[str] = None
+
+    # 日本語 AM/PM（前置）
+    m = re.match(r"^(午前|午後)\s*", value)
+    if m:
+        meridiem = m.group(1)
+        value = value[m.end():].strip()
+
+    # 英語 AM/PM（後置）
+    m = re.search(r"\s*(AM|PM|am|pm)$", value)
+    if m:
+        meridiem = m.group(1).lower()
+        value = value[:m.start()].strip()
+
+    if meridiem is None:
+        meridiem = fallback_meridiem
+
+    hour: Optional[int] = None
+    minute = 0
+
+    # 24時間/12時間 (HH:MM)
+    m = re.match(r"^(\d{1,2})(?::(\d{2}))?$", value)
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2) or 0)
+    else:
+        # 日本語 (H時 / H時M分)
+        m = re.match(r"^(\d{1,2})時(?:\s*(\d{1,2})分?)?$", value)
+        if m:
+            hour = int(m.group(1))
+            minute = int(m.group(2) or 0)
+
+    if hour is None or minute > 59:
+        return None, meridiem
+
+    # 12時間表記を24時間に正規化
+    if meridiem in {"午前", "午後", "am", "pm"} and 0 <= hour <= 12:
+        hour = hour % 12
+        if meridiem in {"午後", "pm"}:
+            hour += 12
+
+    if hour > 23:
+        return None, meridiem
+
+    return f"{hour:02d}:{minute:02d}", meridiem
+
+
 def _extract_date_from_label(label: str, week_dates: list[date]) -> date:
     """aria-label から日付を抽出"""
-    # "2月14日" パターン
-    date_match = re.search(r'(\d{1,2})月(\d{1,2})日', label)
+    # "2026年 2月 14日" パターン
+    ymd_match = re.search(r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日", label)
+    if ymd_match:
+        year = int(ymd_match.group(1))
+        month = int(ymd_match.group(2))
+        day = int(ymd_match.group(3))
+        candidate = date(year, month, day)
+        if candidate in week_dates:
+            return candidate
+        return candidate
+
+    # "2月14日" / "2月 14日" パターン
+    date_match = re.search(r'(\d{1,2})月\s*(\d{1,2})日', label)
     if date_match:
         month = int(date_match.group(1))
         day = int(date_match.group(2))
@@ -236,7 +393,11 @@ def _extract_date_from_label(label: str, week_dates: list[date]) -> date:
 async def _get_event_detail(page: Page, element, event: Event) -> Event:
     """イベントをクリックして詳細情報を取得"""
     try:
-        await element.click()
+        try:
+            await element.scroll_into_view_if_needed(timeout=1000)
+        except Exception:
+            pass
+        await element.click(timeout=1000, force=True)
         await page.wait_for_timeout(500)
 
         # 詳細ポップアップからテキストを取得
@@ -304,7 +465,7 @@ async def fetch_events(config: AppConfig) -> list[Event]:
         page = browser.pages[0] if browser.pages else await browser.new_page()
 
         try:
-            await page.goto(WEEK_VIEW_URL, wait_until="domcontentloaded")
+            await page.goto(WEEK_VIEW_URLS[0], wait_until="domcontentloaded")
 
             if not await is_authenticated(page):
                 await browser.close()
@@ -313,36 +474,82 @@ async def fetch_events(config: AppConfig) -> list[Event]:
                 # 認証後にリトライ
                 return await fetch_events(config)
 
+            selected_url = await _open_best_week_view(page)
+            logger.info("週ビューURLを選択: %s", selected_url)
+
             # ページの読み込みを待つ
             await page.wait_for_timeout(2000)
 
-            # 週の日付を取得
-            week_dates = await _extract_week_dates(page)
+            events: list[Event] = []
+            last_data_eventid_count = 0
 
-            events = []
+            # Google Calendar は描画が遅れることがあるため、0件時は再試行する
+            for attempt in range(1, 4):
+                # 週の日付を取得
+                week_dates = await _extract_week_dates(page)
+                events = []
 
-            # 終日イベントの取得
-            try:
-                all_day_events = await _extract_all_day_events(page, week_dates)
-                events.extend(all_day_events)
-            except Exception as e:
-                logger.warning(f"終日イベント取得失敗: {e}")
+                # 終日イベントの取得
+                try:
+                    all_day_events = await _extract_all_day_events(page, week_dates)
+                    events.extend(all_day_events)
+                except Exception as e:
+                    logger.warning(f"終日イベント取得失敗: {e}")
 
-            # 時間指定イベントの取得
-            try:
-                timed_events = await _extract_timed_events(page, week_dates)
-                events.extend(timed_events)
-            except Exception as e:
-                logger.warning(f"時間指定イベント取得失敗: {e}")
+                # 時間指定イベントの取得
+                try:
+                    timed_events = await _extract_timed_events(page, week_dates)
+                    events.extend(timed_events)
+                except Exception as e:
+                    logger.warning(f"時間指定イベント取得失敗: {e}")
+                    timed_events = []
+
+                last_data_eventid_count = await page.locator('[data-eventid]').count()
+                logger.info(
+                    "時間指定イベント解析: %d 件 (data-eventid=%d, attempt=%d)",
+                    len(timed_events),
+                    last_data_eventid_count,
+                    attempt,
+                )
+
+                if events:
+                    break
+
+                if attempt < 3:
+                    logger.warning(
+                        "予定を0件検出。週ビューを再読み込みして再試行します (attempt=%d)",
+                        attempt,
+                    )
+                    await page.reload(wait_until="domcontentloaded")
+                    await page.wait_for_timeout(2000)
+
+            if not events:
+                logger.warning(
+                    "再試行後も0件でした (data-eventid=%d)。",
+                    last_data_eventid_count,
+                )
 
             # 各イベントの詳細を取得（会議URL等）
-            # 再度イベント要素を取得して詳細を開く
+            # ここが重いと UI 更新が遅延するため、件数と時間を制限する。
             event_elements = await page.query_selector_all(
-                '[data-eventid], [role="button"][data-eventchip]'
+                '[data-eventid]:not([data-allday="true"]), [role="button"][data-eventchip]'
             )
-            for i, element in enumerate(event_elements):
-                if i < len(events):
-                    events[i] = await _get_event_detail(page, element, events[i])
+            detail_limit = min(len(events), len(event_elements), 5)
+            if detail_limit < len(events):
+                logger.info(
+                    "イベント詳細取得を制限: %d/%d 件",
+                    detail_limit,
+                    len(events),
+                )
+
+            for i in range(detail_limit):
+                try:
+                    events[i] = await asyncio.wait_for(
+                        _get_event_detail(page, event_elements[i], events[i]),
+                        timeout=2.0,
+                    )
+                except Exception as e:
+                    logger.debug(f"詳細取得タイムアウト/失敗 (index={i}): {e}")
 
             logger.info(f"{len(events)} 件の予定を取得しました")
             return events
