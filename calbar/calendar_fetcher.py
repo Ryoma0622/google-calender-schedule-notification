@@ -15,6 +15,13 @@ logger = logging.getLogger(__name__)
 
 CALENDAR_URL = "https://calendar.google.com"
 WEEK_VIEW_URL = "https://calendar.google.com/calendar/r/week"
+# Google Calendar へのアクセスを前提とした認証 URL
+# 未認証時に calendar.google.com を開くと商品紹介ページにリダイレクトされるため、
+# accounts.google.com 経由で認証後に Calendar へ遷移させる
+AUTH_URL = (
+    "https://accounts.google.com/ServiceLogin"
+    "?continue=https://calendar.google.com/calendar/r/week"
+)
 
 
 async def is_authenticated(page: Page) -> bool:
@@ -39,7 +46,7 @@ async def authenticate(config: AppConfig):
             args=["--window-size=800,600"],
         )
         page = browser.pages[0] if browser.pages else await browser.new_page()
-        await page.goto(CALENDAR_URL)
+        await page.goto(AUTH_URL)
 
         logger.info("ブラウザでGoogleアカウントにログインしてください...")
 
