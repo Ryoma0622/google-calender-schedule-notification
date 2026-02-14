@@ -5,7 +5,7 @@ from typing import Optional
 
 MEETING_URL_PATTERNS = [
     # Google Meet
-    r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}",
+    r"(?:https?://)?meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}\b",
     # Zoom
     r"https://[\w.-]*zoom\.us/j/\d+(?:\?pwd=[\w]+)?",
     # Microsoft Teams
@@ -22,7 +22,10 @@ def extract_meeting_url(text: str) -> Optional[str]:
     for pattern in MEETING_URL_PATTERNS:
         match = re.search(pattern, text)
         if match:
-            return match.group(0)
+            url = match.group(0)
+            if url.startswith("meet.google.com/"):
+                return f"https://{url}"
+            return url
     return None
 
 

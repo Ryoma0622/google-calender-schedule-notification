@@ -191,9 +191,12 @@ async def _extract_all_day_events(page: Page, week_dates: list[date]) -> list[Ev
     return events
 
 
-async def _extract_timed_events(page: Page, week_dates: list[date]) -> list[Event]:
-    """時間指定イベントを抽出"""
-    events = []
+async def _extract_timed_events(
+    page: Page,
+    week_dates: list[date],
+) -> list[tuple[Event, object]]:
+    """時間指定イベントを抽出（Event と対応する要素の組を返す）"""
+    event_pairs: list[tuple[Event, object]] = []
 
     # イベントチップを取得 - aria-label と role 属性を使用
     event_elements = await page.query_selector_all(
@@ -219,17 +222,17 @@ async def _extract_timed_events(page: Page, week_dates: list[date]) -> list[Even
         # または: "9:00 - 10:00, イベントタイトル"
         event_data = _parse_aria_label(label, week_dates)
         if event_data:
-            events.append(event_data)
+            event_pairs.append((event_data, element))
         elif len(parse_failed_labels) < 3:
             parse_failed_labels.append(label[:200])
 
-    if not events and parse_failed_labels:
+    if not event_pairs and parse_failed_labels:
         logger.warning(
             "時間指定イベントの解析に失敗しました。ラベル例: %s",
             " | ".join(parse_failed_labels),
         )
 
-    return events
+    return event_pairs
 
 
 def _parse_aria_label(label: str, week_dates: list[date]) -> Optional[Event]:
@@ -392,18 +395,48 @@ def _extract_date_from_label(label: str, week_dates: list[date]) -> date:
 
 async def _get_event_detail(page: Page, element, event: Event) -> Event:
     """イベントをクリックして詳細情報を取得"""
-    try:
-        try:
-            await element.scroll_into_view_if_needed(timeout=1000)
-        except Exception:
-            pass
-        await element.click(timeout=1000, force=True)
-        await page.wait_for_timeout(500)
-
-        # 詳細ポップアップからテキストを取得
-        detail_panel = await page.query_selector(
+    async def _get_visible_detail_panel():
+        panels = await page.query_selector_all(
             '[role="dialog"], [data-eventdetails], .ecHOqf'
         )
+        for panel in panels:
+            try:
+                if await panel.is_visible():
+                    return panel
+            except Exception:
+                continue
+        return None
+
+    async def _open_detail_panel_by_click(target) -> Optional[object]:
+        try:
+            await target.scroll_into_view_if_needed(timeout=1000)
+        except Exception:
+            pass
+
+        for _ in range(2):
+            try:
+                await target.click(timeout=1200, force=True)
+            except Exception:
+                continue
+            await page.wait_for_timeout(250)
+            panel = await _get_visible_detail_panel()
+            if panel:
+                return panel
+        return None
+
+    try:
+        # クリック対象を複数試して、詳細パネルを開く
+        targets = [element]
+        inner = await element.query_selector('.leOeGd[data-eventid]')
+        if inner:
+            targets.insert(0, inner)
+
+        detail_panel = None
+        for target in targets:
+            detail_panel = await _open_detail_panel_by_click(target)
+            if detail_panel:
+                break
+
         if detail_panel:
             detail_text = await detail_panel.text_content() or ''
 
@@ -428,15 +461,12 @@ async def _get_event_detail(page: Page, element, event: Event) -> Event:
             if location_el:
                 event.location = await location_el.text_content()
 
-        # ポップアップを閉じる
-        close_btn = await page.query_selector(
-            '[aria-label="閉じる"], [aria-label="Close"], button[aria-label*="close"]'
-        )
-        if close_btn:
-            await close_btn.click()
-        else:
+        # 閉じるボタンは可視性待ちで詰まりやすいので Escape を優先する
+        try:
             await page.keyboard.press('Escape')
-        await page.wait_for_timeout(300)
+        except Exception:
+            pass
+        await page.wait_for_timeout(150)
 
     except Exception as e:
         logger.debug(f"詳細取得失敗: {e}")
@@ -481,6 +511,7 @@ async def fetch_events(config: AppConfig) -> list[Event]:
             await page.wait_for_timeout(2000)
 
             events: list[Event] = []
+            timed_event_pairs: list[tuple[Event, object]] = []
             last_data_eventid_count = 0
 
             # Google Calendar は描画が遅れることがあるため、0件時は再試行する
@@ -498,11 +529,13 @@ async def fetch_events(config: AppConfig) -> list[Event]:
 
                 # 時間指定イベントの取得
                 try:
-                    timed_events = await _extract_timed_events(page, week_dates)
+                    timed_event_pairs = await _extract_timed_events(page, week_dates)
+                    timed_events = [event for event, _ in timed_event_pairs]
                     events.extend(timed_events)
                 except Exception as e:
                     logger.warning(f"時間指定イベント取得失敗: {e}")
                     timed_events = []
+                    timed_event_pairs = []
 
                 last_data_eventid_count = await page.locator('[data-eventid]').count()
                 logger.info(
@@ -530,26 +563,30 @@ async def fetch_events(config: AppConfig) -> list[Event]:
                 )
 
             # 各イベントの詳細を取得（会議URL等）
-            # ここが重いと UI 更新が遅延するため、件数と時間を制限する。
-            event_elements = await page.query_selector_all(
-                '[data-eventid]:not([data-allday="true"]), [role="button"][data-eventchip]'
-            )
-            detail_limit = min(len(events), len(event_elements), 5)
-            if detail_limit < len(events):
+            # 抽出時と同じ要素に対して処理しないと URL が別イベントにずれるため、
+            # _extract_timed_events で保持した対応ペアを使う。
+            all_day_count = len([e for e in events if e.is_all_day])
+            detail_limit = min(len(timed_event_pairs), 5)
+            if detail_limit < len(timed_event_pairs):
                 logger.info(
                     "イベント詳細取得を制限: %d/%d 件",
                     detail_limit,
-                    len(events),
+                    len(timed_event_pairs),
                 )
 
             for i in range(detail_limit):
+                event_index = all_day_count + i
+                _, element = timed_event_pairs[i]
                 try:
-                    events[i] = await asyncio.wait_for(
-                        _get_event_detail(page, event_elements[i], events[i]),
-                        timeout=2.0,
+                    events[event_index] = await _get_event_detail(
+                        page,
+                        element,
+                        events[event_index],
                     )
                 except Exception as e:
-                    logger.debug(f"詳細取得タイムアウト/失敗 (index={i}): {e}")
+                    logger.debug(
+                        f"詳細取得タイムアウト/失敗 (timed_index={i}, event_index={event_index}): {e}"
+                    )
 
             logger.info(f"{len(events)} 件の予定を取得しました")
             return events
