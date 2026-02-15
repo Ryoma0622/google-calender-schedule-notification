@@ -23,7 +23,7 @@ class CalBarApp(rumps.App):
     def __init__(self):
         super().__init__(
             "CalBar",
-            title="...",
+            title="Cal",
             quit_button=None,
         )
         self.config = load_config()
@@ -255,10 +255,17 @@ class CalBarApp(rumps.App):
         now = datetime.now()
         today_schedule = self.events.get(now.date())
 
-        if not today_schedule:
-            self.title = "--"
+        if not today_schedule or not today_schedule.timed_events:
+            self.title = "* No Events"
             self._force_status_item_refresh()
             return
+
+        # 開催中のイベントを探す
+        current_event = None
+        for ev in today_schedule.timed_events:
+            if ev.start_time <= now < ev.end_time:
+                current_event = ev
+                break
 
         next_event = None
         for ev in today_schedule.timed_events:
@@ -266,7 +273,21 @@ class CalBarApp(rumps.App):
                 next_event = ev
                 break
 
-        if next_event:
+        if current_event and next_event:
+            # 開催中 + 次の予定あり
+            minutes_until = int(
+                (next_event.start_time - now).total_seconds() / 60
+            )
+            time_str = next_event.start_time.strftime("%H:%M")
+            remaining = self._format_remaining_compact(minutes_until)
+            self.title = self._build_menubar_title(
+                ">" + time_str, remaining
+            )
+        elif current_event:
+            # 開催中で次の予定なし
+            end_str = current_event.end_time.strftime("%H:%M")
+            self.title = f">~{end_str}"
+        elif next_event:
             minutes_until = int(
                 (next_event.start_time - now).total_seconds() / 60
             )
@@ -274,7 +295,7 @@ class CalBarApp(rumps.App):
             remaining = self._format_remaining_compact(minutes_until)
             self.title = self._build_menubar_title(time_str, remaining)
         else:
-            self.title = "--"
+            self.title = "* All Done"
 
         self._force_status_item_refresh()
 
