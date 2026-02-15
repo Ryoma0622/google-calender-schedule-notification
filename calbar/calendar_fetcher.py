@@ -8,6 +8,13 @@ from typing import Optional
 
 from playwright.async_api import async_playwright, Page
 
+# .app バンドル実行時にシステムの Playwright ブラウザを参照
+# uv でインストールされたブラウザの標準パス
+if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+    home_browsers = os.path.expanduser("~/.cache/ms-playwright")
+    if os.path.exists(home_browsers):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = home_browsers
+
 from models import AppConfig, Event
 from event_parser import parse_event_from_dom_data
 from utils import extract_meeting_url

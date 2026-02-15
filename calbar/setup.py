@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "py2app>=0.28",
+#     "setuptools>=68.0",
+#     "rumps>=0.4.0",
+#     "playwright>=1.40.0",
+# ]
+# ///
 from setuptools import setup
 
 APP = ["main.py"]
@@ -16,6 +26,14 @@ OPTIONS = {
     "packages": [
         "rumps",
         "playwright",
+        "playwright.sync_api",
+        "playwright._impl",
+    ],
+    "includes": [
+        "playwright.sync_api",
+    ],
+    "excludes": [
+        "playwright._impl.__pyinstaller",  # PyInstaller 専用フックを除外
     ],
 }
 
