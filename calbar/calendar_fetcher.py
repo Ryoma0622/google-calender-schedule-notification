@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import subprocess
 import unicodedata
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -9,17 +10,75 @@ from typing import Optional
 from playwright.async_api import async_playwright, Page
 
 # .app バンドル実行時にシステムの Playwright ブラウザを参照
-# uv でインストールされたブラウザの標準パス
+# macOS / Linux それぞれの標準パスを順に探す
 if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-    home_browsers = os.path.expanduser("~/.cache/ms-playwright")
-    if os.path.exists(home_browsers):
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = home_browsers
+    _browser_candidates = [
+        os.path.expanduser("~/Library/Caches/ms-playwright"),  # macOS
+        os.path.expanduser("~/.cache/ms-playwright"),  # Linux
+    ]
+    for _candidate in _browser_candidates:
+        if os.path.exists(_candidate):
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _candidate
+            break
+    else:
+        # どちらも存在しない場合は macOS のデフォルトパスを設定
+        # (playwright install 時にここに作成される)
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _browser_candidates[0]
 
 from models import AppConfig, Event
 from event_parser import parse_event_from_dom_data
 from utils import extract_meeting_url
 
 logger = logging.getLogger(__name__)
+
+_chromium_checked = False
+
+
+def _ensure_chromium_installed() -> None:
+    """Chromium がインストール済みか確認し、未インストールなら自動取得する。
+
+    .app バンドルから配布した場合、ユーザー環境に Playwright の Chromium が
+    存在しないため、初回起動時に自動インストールを行う。
+    """
+    global _chromium_checked
+    if _chromium_checked:
+        return
+
+    from playwright._impl._driver import compute_driver_executable
+
+    node_path, cli_path = compute_driver_executable()
+    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+
+    # ブラウザディレクトリに chromium- で始まるフォルダがあればインストール済み
+    if browsers_path and os.path.isdir(browsers_path):
+        for entry in os.listdir(browsers_path):
+            if entry.startswith("chromium-"):
+                _chromium_checked = True
+                return
+
+    logger.info("Chromium が見つかりません。自動インストールを開始します...")
+    try:
+        env = os.environ.copy()
+        if browsers_path:
+            env["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
+        result = subprocess.run(
+            [node_path, cli_path, "install", "chromium"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode == 0:
+            logger.info("Chromium のインストールが完了しました")
+        else:
+            logger.error(
+                "Chromium のインストールに失敗しました: %s", result.stderr[:500]
+            )
+    except Exception as e:
+        logger.error("Chromium の自動インストール中にエラー: %s", e)
+
+    _chromium_checked = True
+
 
 CALENDAR_URL = "https://calendar.google.com"
 WEEK_VIEW_URLS = [
@@ -111,6 +170,7 @@ async def is_authenticated(page: Page) -> bool:
 
 async def authenticate(config: AppConfig):
     """未認証時にヘッド付きブラウザを起動しユーザーに手動ログインさせる"""
+    _ensure_chromium_installed()
     profile_path = os.path.expanduser(config.browser_profile_path)
     os.makedirs(profile_path, exist_ok=True)
     _remove_singleton_lock(profile_path)
@@ -658,6 +718,7 @@ async def _get_event_detail(page: Page, element, event: Event) -> Event:
 
 async def fetch_events(config: AppConfig) -> list[Event]:
     """1 週間分の予定を取得"""
+    _ensure_chromium_installed()
     profile_path = os.path.expanduser(config.browser_profile_path)
     os.makedirs(profile_path, exist_ok=True)
     _remove_singleton_lock(profile_path)
