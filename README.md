@@ -125,11 +125,27 @@ calbar/
 ## .app バンドルの作成
 
 ```bash
+# 1. Playwright ブラウザをインストール（初回のみ）
+uv run --with playwright playwright install chromium
+
+# 2. .app バンドルをビルド
+# uv を使う場合
+uv run setup.py py2app
+
+# または手動 venv の場合
 cd calbar
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install py2app
 python setup.py py2app
 ```
 
 `dist/CalBar.app` が生成されます。
+
+**注意:**
+- `.app` バンドルは、システムにインストールされた Playwright ブラウザ（`~/.cache/ms-playwright`）を参照します
+- `.app` 実行前に `playwright install chromium` でブラウザをインストールしてください
 
 ## 技術スタック
 

@@ -64,7 +64,7 @@ class FetchScheduler:
             for e in events
         ]
         try:
-            with open(cache_path, "w") as f:
+            with open(cache_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             logger.debug(f"キャッシュ保存: {len(events)} 件")
         except Exception as e:
@@ -77,7 +77,7 @@ class FetchScheduler:
             return None
 
         try:
-            with open(cache_path, "r") as f:
+            with open(cache_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             events = []

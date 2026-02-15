@@ -19,7 +19,7 @@ def load_config() -> AppConfig:
     """設定ファイルを読み込み、AppConfig を返す"""
     os.makedirs(CONFIG_DIR, exist_ok=True)
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = {**DEFAULT_CONFIG, **json.load(f)}
             return AppConfig(**data)
     return AppConfig(**DEFAULT_CONFIG)
@@ -28,7 +28,7 @@ def load_config() -> AppConfig:
 def save_config(config: AppConfig):
     """AppConfig を JSON ファイルに保存"""
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "notification_minutes_before": config.notification_minutes_before,
