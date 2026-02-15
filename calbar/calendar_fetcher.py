@@ -144,6 +144,7 @@ ACCOUNT_LABEL_SELECTORS = [
     'button[aria-label*="Google Account"]',
     '[aria-label*="Google Account"]',
 ]
+TimedEventRecord = tuple[Event, Optional[str], str]
 
 
 def _remove_singleton_lock(profile_path: str) -> None:
@@ -301,9 +302,9 @@ async def _extract_all_day_events(page: Page, week_dates: list[date]) -> list[Ev
 async def _extract_timed_events(
     page: Page,
     week_dates: list[date],
-) -> list[tuple[Event, object]]:
-    """時間指定イベントを抽出（Event と対応する要素の組を返す）"""
-    event_pairs: list[tuple[Event, object]] = []
+) -> list[TimedEventRecord]:
+    """時間指定イベントを抽出（Event と識別情報の組を返す）"""
+    event_pairs: list[TimedEventRecord] = []
 
     # イベントチップを取得 - aria-label と role 属性を使用
     event_elements = await page.query_selector_all(
@@ -329,7 +330,12 @@ async def _extract_timed_events(
         # または: "9:00 - 10:00, イベントタイトル"
         event_data = _parse_aria_label(label, week_dates)
         if event_data:
-            event_pairs.append((event_data, element))
+            event_id = await element.get_attribute('data-eventid')
+            if not event_id:
+                inner = await element.query_selector('[data-eventid]')
+                if inner:
+                    event_id = await inner.get_attribute('data-eventid')
+            event_pairs.append((event_data, event_id, label))
         elif len(parse_failed_labels) < 3:
             parse_failed_labels.append(label[:200])
 
@@ -630,6 +636,62 @@ def _extract_date_from_label(label: str, week_dates: list[date]) -> date:
     return date.today()
 
 
+async def _extract_meeting_url_from_chip(element) -> Optional[str]:
+    """イベントチップ内の属性/リンクから会議 URL を抽出"""
+    aria_label = await element.get_attribute('aria-label') or ''
+    url = extract_meeting_url(aria_label)
+    if url:
+        return url
+
+    href = await element.get_attribute('href') or ''
+    url = extract_meeting_url(href)
+    if url:
+        return url
+
+    links = await element.query_selector_all('a[href], [href]')
+    for link in links:
+        href = await link.get_attribute('href') or ''
+        url = extract_meeting_url(href)
+        if url:
+            return url
+
+    return None
+
+
+async def _find_timed_event_element(
+    page: Page,
+    event_id: Optional[str],
+    label: str,
+) -> Optional[object]:
+    """詳細取得対象のイベント要素を再解決する（stale handle 対策）"""
+    event_elements = await page.query_selector_all(
+        '[data-eventid]:not([data-allday="true"]), '
+        '[role="button"][data-eventchip]'
+    )
+
+    normalized_label = label.strip()
+    fallback = None
+
+    for element in event_elements:
+        current_event_id = (await element.get_attribute('data-eventid') or '').strip()
+        if not current_event_id:
+            inner = await element.query_selector('[data-eventid]')
+            if inner:
+                current_event_id = (await inner.get_attribute('data-eventid') or '').strip()
+
+        if event_id and current_event_id and current_event_id == event_id:
+            return element
+
+        if fallback is None and normalized_label:
+            current_label = (await element.get_attribute('aria-label') or '').strip()
+            if not current_label:
+                current_label = (await element.text_content() or '').strip()
+            if current_label == normalized_label:
+                fallback = element
+
+    return fallback
+
+
 async def _get_event_detail(page: Page, element, event: Event) -> Event:
     """イベントをクリックして詳細情報を取得"""
     async def _get_visible_detail_panel():
@@ -662,6 +724,12 @@ async def _get_event_detail(page: Page, element, event: Event) -> Event:
         return None
 
     try:
+        # チップ自体に会議リンクが埋まっている場合はクリック不要
+        chip_url = await _extract_meeting_url_from_chip(element)
+        if chip_url:
+            event.meeting_url = chip_url
+            return event
+
         # クリック対象を複数試して、詳細パネルを開く
         targets = [element]
         inner = await element.query_selector('.leOeGd[data-eventid]')
@@ -750,7 +818,7 @@ async def fetch_events(config: AppConfig) -> list[Event]:
 
             events: list[Event] = []
             all_day_events: list[Event] = []
-            timed_event_pairs: list[tuple[Event, object]] = []
+            timed_event_pairs: list[TimedEventRecord] = []
             last_data_eventid_count = 0
             own_calendar_display_name: Optional[str] = None
             own_calendar_aliases: set[str] = set()
@@ -786,7 +854,7 @@ async def fetch_events(config: AppConfig) -> list[Event]:
                 # 時間指定イベントの取得
                 try:
                     timed_event_pairs = await _extract_timed_events(page, week_dates)
-                    timed_events = [event for event, _ in timed_event_pairs]
+                    timed_events = [event for event, _, _ in timed_event_pairs]
                 except Exception as e:
                     logger.warning(f"時間指定イベント取得失敗: {e}")
                     timed_events = []
@@ -803,11 +871,11 @@ async def fetch_events(config: AppConfig) -> list[Event]:
                         if _is_own_calendar_event(event, own_calendar_aliases)
                     ]
                     timed_event_pairs = [
-                        (event, element)
-                        for event, element in timed_event_pairs
+                        (event, event_id, label)
+                        for event, event_id, label in timed_event_pairs
                         if _is_own_calendar_event(event, own_calendar_aliases)
                     ]
-                    timed_events = [event for event, _ in timed_event_pairs]
+                    timed_events = [event for event, _, _ in timed_event_pairs]
                     after_filter_count = len(all_day_events) + len(timed_events)
                     if before_filter_count != after_filter_count:
                         logger.info(
@@ -847,20 +915,18 @@ async def fetch_events(config: AppConfig) -> list[Event]:
                 )
 
             # 各イベントの詳細を取得（会議URL等）
-            # 抽出時と同じ要素に対して処理しないと URL が別イベントにずれるため、
-            # _extract_timed_events で保持した対応ペアを使う。
             all_day_count = len([e for e in events if e.is_all_day])
-            detail_limit = min(len(timed_event_pairs), 5)
-            if detail_limit < len(timed_event_pairs):
-                logger.info(
-                    "イベント詳細取得を制限: %d/%d 件",
-                    detail_limit,
-                    len(timed_event_pairs),
-                )
-
-            for i in range(detail_limit):
+            for i in range(len(timed_event_pairs)):
                 event_index = all_day_count + i
-                _, element = timed_event_pairs[i]
+                _, event_id, label = timed_event_pairs[i]
+                element = await _find_timed_event_element(page, event_id, label)
+                if element is None:
+                    logger.debug(
+                        "詳細取得対象を再解決できませんでした (timed_index=%d, event_id=%s)",
+                        i,
+                        event_id or "unknown",
+                    )
+                    continue
                 try:
                     events[event_index] = await _get_event_detail(
                         page,
