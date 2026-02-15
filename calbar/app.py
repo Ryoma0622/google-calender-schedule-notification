@@ -21,17 +21,25 @@ logger = logging.getLogger(__name__)
 
 class CalBarApp(rumps.App):
     def __init__(self):
+        icon_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "resources",
+            "icon.png",
+        )
         super().__init__(
             "CalBar",
             title="Cal",
+            icon=icon_path if os.path.exists(icon_path) else None,
             quit_button=None,
         )
+        self._icon_path = icon_path
         self.config = load_config()
         self.events: dict[date, DaySchedule] = {}
         self.current_view_date: date = date.today()
         self._started = False
         self._status_backend_logged = False
         self._status_refresh_count = 0
+        self._watchdog_tick_count = 0
 
         # バックグラウンドスレッド → メインスレッド間のイベント受け渡し
         self._pending_events: list[Event] | None = None
@@ -50,6 +58,7 @@ class CalBarApp(rumps.App):
             self._on_fetch_timer, self.config.fetch_interval_minutes * 60
         )
         self.title_timer = rumps.Timer(self._update_title, 60)
+        self.status_watchdog_timer = rumps.Timer(self._status_watchdog, 15)
 
         # rumps の run loop 起動後に初回取得とタイマー開始を行う
         rumps.events.before_start(self._on_before_start)
@@ -64,6 +73,8 @@ class CalBarApp(rumps.App):
         self._poll_timer.start()
         self.fetch_timer.start()
         self.title_timer.start()
+        self.status_watchdog_timer.start()
+        self.fetch_scheduler.run_fetch()
         self._force_status_item_refresh()
 
     def _force_status_item_refresh(self):
@@ -88,6 +99,16 @@ class CalBarApp(rumps.App):
             if button is not None:
                 button.setTitle_(display_title)
                 if not button.title() and not button.image():
+                    if os.path.exists(self._icon_path) and hasattr(button, "setImage_"):
+                        try:
+                            from AppKit import NSImage
+                            image = NSImage.alloc().initByReferencingFile_(self._icon_path)
+                            if image is not None:
+                                if hasattr(image, "setTemplate_"):
+                                    image.setTemplate_(True)
+                                button.setImage_(image)
+                        except Exception:
+                            logger.debug("ステータスアイコン設定に失敗しました", exc_info=True)
                     button.setTitle_(self.name)
                 if hasattr(button, "setToolTip_"):
                     button.setToolTip_(title)
@@ -105,8 +126,9 @@ class CalBarApp(rumps.App):
             if hasattr(status_item, "setVisible_"):
                 status_item.setVisible_(True)
             if hasattr(status_item, "setLength_"):
-                # 長いタイトルで項目ごと消えるのを避けるため固定幅にする。
-                status_item.setLength_(96.0)
+                # 固定幅はメニューバー混雑時に項目が押し出されやすいため可変幅を使う。
+                # NSVariableStatusItemLength = -1.0
+                status_item.setLength_(-1.0)
 
             self._status_refresh_count += 1
             if self._status_refresh_count <= 3:
@@ -132,6 +154,40 @@ class CalBarApp(rumps.App):
                 )
         except Exception:
             logger.exception("ステータスアイテムの表示再反映に失敗しました")
+
+    def _status_watchdog(self, _=None):
+        """ステータスアイテムの見失いを監視し、必要なら再反映する。"""
+        self._watchdog_tick_count += 1
+        nsapp = getattr(self, "_nsapp", None)
+        status_item = getattr(nsapp, "nsstatusitem", None) if nsapp is not None else None
+        if status_item is None:
+            logger.warning("ステータスアイテム参照を取得できません。再反映を試みます")
+            self._force_status_item_refresh()
+            return
+
+        button = status_item.button() if hasattr(status_item, "button") else None
+        visible = (
+            status_item.isVisible()
+            if hasattr(status_item, "isVisible")
+            else True
+        )
+        button_has_content = True
+        if button is not None and hasattr(button, "title") and hasattr(button, "image"):
+            button_has_content = bool(button.title()) or bool(button.image())
+        if self._watchdog_tick_count % 4 == 0:
+            logger.info(
+                "ステータス監視: visible=%s has_content=%s",
+                visible,
+                button_has_content,
+            )
+
+        if not visible or not button_has_content:
+            logger.warning(
+                "ステータス表示を再反映します (visible=%s, has_content=%s)",
+                visible,
+                button_has_content,
+            )
+            self._force_status_item_refresh()
 
     def _on_events_fetched(self, events: list[Event]):
         """予定取得完了時のコールバック（バックグラウンドスレッドから呼ばれる）
@@ -413,5 +469,9 @@ class CalBarApp(rumps.App):
     def _quit_app(self, _):
         """アプリ終了"""
         rumps.events.before_start.unregister(self._on_before_start)
+        self.status_watchdog_timer.stop()
+        self.title_timer.stop()
+        self.fetch_timer.stop()
+        self._poll_timer.stop()
         self.notifier.cancel_all()
         rumps.quit_application()

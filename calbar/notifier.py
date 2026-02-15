@@ -13,32 +13,69 @@ class Notifier:
     def __init__(self, config: AppConfig):
         self.config = config
         self._scheduled_timers: dict[str, threading.Timer] = {}
+        self._notified_event_keys: set[str] = set()
+
+    def _event_key(self, event: Event) -> str:
+        """同一予定判定用キー"""
+        return f"{event.title}_{event.start_time.isoformat()}"
 
     def schedule_notifications(self, events: list[Event]):
         """全予定に対して通知タイマーをセット"""
         self.cancel_all()
         now = datetime.now()
+        active_event_keys = {
+            self._event_key(event)
+            for event in events
+            if not event.is_all_day
+        }
+        self._notified_event_keys.intersection_update(active_event_keys)
+        sent_immediately = 0
 
         for event in events:
             if event.is_all_day:
+                continue
+
+            timer_key = self._event_key(event)
+            if timer_key in self._notified_event_keys:
+                continue
+
+            if event.start_time <= now:
                 continue
 
             notify_at = event.start_time - timedelta(
                 minutes=self.config.notification_minutes_before
             )
 
-            if notify_at <= now:
-                continue  # 既に通知時刻を過ぎている
+            if notify_at <= now < event.start_time:
+                # 通知時刻を過ぎていても、開始前なら即時通知して取りこぼしを防ぐ
+                self._send_notification(event)
+                self._notified_event_keys.add(timer_key)
+                sent_immediately += 1
+                continue
 
             delay = (notify_at - now).total_seconds()
-            timer_key = f"{event.title}_{event.start_time.isoformat()}"
-
-            timer = threading.Timer(delay, self._send_notification, args=[event])
+            timer = threading.Timer(
+                delay,
+                self._send_notification_by_key,
+                args=[timer_key, event],
+            )
             timer.daemon = True
             timer.start()
             self._scheduled_timers[timer_key] = timer
 
-        logger.info(f"{len(self._scheduled_timers)} 件の通知をスケジュールしました")
+        logger.info(
+            "%d 件の通知をスケジュールしました (即時通知=%d)",
+            len(self._scheduled_timers),
+            sent_immediately,
+        )
+
+    def _send_notification_by_key(self, timer_key: str, event: Event):
+        """タイマー経由の通知実行（送信済み管理付き）"""
+        try:
+            self._send_notification(event)
+        finally:
+            self._notified_event_keys.add(timer_key)
+            self._scheduled_timers.pop(timer_key, None)
 
     def _send_notification(self, event: Event):
         """macOS 通知を送信"""
