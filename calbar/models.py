@@ -41,4 +41,5 @@ class AppConfig:
     config_path: str = "~/.calbar/config.json"
     show_all_day_events: bool = True
     show_only_own_calendar: bool = True
+    auto_open_meeting_on_start: bool = False  # 会議開始時に Meet を自動起動
     max_title_length_menubar: int = 30  # メニューバー表示のタイトル文字数上限

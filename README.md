@@ -10,6 +10,7 @@ Playwright で Google カレンダーから予定を取得し、次のミーテ�
 - **日付ナビゲーション** — 前日 / 今日 / 翌日の切り替え
 - **事前通知** — 予定の N 分前に macOS 通知（デフォルト 5 分）
 - **会議 URL ワンクリック起動** — 通知クリックで Google Meet / Zoom / Teams を自動起動
+- **会議開始時の自動起動（任意）** — 設定で有効化すると、開始時刻に Meet URL を自動で開く
 - **終日予定の表示** — 一覧の先頭に「終日」ラベル付きで表示
 - **オフライン対応** — ネットワーク不通時はキャッシュデータを表示
 - **設定画面** — 通知タイミング・取得間隔をカスタマイズ
@@ -101,6 +102,7 @@ python main.py
 |------|-----------|------|
 | `notification_minutes_before` | `5` | 予定の何分前に通知するか（0〜60） |
 | `fetch_interval_minutes` | `5` | カレンダーの自動取得間隔（1〜30 分） |
+| `auto_open_meeting_on_start` | `false` | 会議開始時刻に Meet URL を自動で開くか |
 | `show_all_day_events` | `true` | 終日予定を表示するか |
 | `max_title_length_menubar` | `30` | メニューバーのタイトル文字数上限 |
 
@@ -128,7 +130,10 @@ calbar/
 # 1. Playwright ブラウザをインストール（初回のみ）
 uv run --with playwright playwright install chromium
 
-# 2. .app バンドルをビルド
+# 2. terminal-notifier をインストール（通知クリックで URL 起動する場合は必須）
+brew install terminal-notifier
+
+# 3. .app バンドルをビルド
 # uv を使う場合
 uv run setup.py py2app
 
@@ -146,6 +151,7 @@ python setup.py py2app
 **注意:**
 - `.app` バンドルは、システムにインストールされた Playwright ブラウザ（`~/.cache/ms-playwright`）を参照します
 - `.app` 実行前に `playwright install chromium` でブラウザをインストールしてください
+- `.app` 実行前に `terminal-notifier` をインストールしてください（通知クリックで Meet/Zoom を開くため）
 
 ## 技術スタック
 

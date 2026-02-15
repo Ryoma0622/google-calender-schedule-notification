@@ -420,6 +420,8 @@ class CalBarApp(rumps.App):
 
     def _open_settings(self, _):
         """設定ダイアログを表示"""
+        settings_changed = False
+
         # 通知時間の設定
         response = rumps.Window(
             title="\u901a\u77e5\u8a2d\u5b9a",
@@ -437,6 +439,7 @@ class CalBarApp(rumps.App):
                     self.config.notification_minutes_before = minutes
                     save_config(self.config)
                     self.notifier.config = self.config
+                    settings_changed = True
             except ValueError:
                 pass
 
@@ -456,6 +459,7 @@ class CalBarApp(rumps.App):
                 if 1 <= interval <= 30:
                     self.config.fetch_interval_minutes = interval
                     save_config(self.config)
+                    settings_changed = True
                     # タイマー再設定
                     self.fetch_timer.stop()
                     self.fetch_timer = rumps.Timer(
@@ -465,6 +469,34 @@ class CalBarApp(rumps.App):
                     self.fetch_timer.start()
             except ValueError:
                 pass
+
+        # 会議開始時の自動起動設定
+        current_auto_open = "有効" if self.config.auto_open_meeting_on_start else "無効"
+        choice = rumps.alert(
+            title="会議自動起動",
+            message=(
+                f"現在: {current_auto_open}\n"
+                "会議開始時に Meet URL がある予定を自動で開きますか？"
+            ),
+            ok="有効にする",
+            cancel="無効にする",
+            other="変更しない",
+        )
+        if choice in {1, 1000}:
+            self.config.auto_open_meeting_on_start = True
+            save_config(self.config)
+            self.notifier.config = self.config
+            settings_changed = True
+        elif choice in {0, 1001}:
+            self.config.auto_open_meeting_on_start = False
+            save_config(self.config)
+            self.notifier.config = self.config
+            settings_changed = True
+
+        if settings_changed:
+            today_schedule = self.events.get(date.today())
+            if today_schedule:
+                self.notifier.schedule_notifications(today_schedule.events)
 
     def _quit_app(self, _):
         """アプリ終了"""

@@ -15,7 +15,9 @@ class Notifier:
     def __init__(self, config: AppConfig):
         self.config = config
         self._scheduled_timers: dict[str, threading.Timer] = {}
+        self._meeting_open_timers: dict[str, threading.Timer] = {}
         self._notified_event_keys: set[str] = set()
+        self._auto_opened_event_keys: set[str] = set()
         self._terminal_notifier_path = self._resolve_terminal_notifier_path()
         if self._terminal_notifier_path:
             logger.info(
@@ -56,7 +58,11 @@ class Notifier:
             if not event.is_all_day
         }
         self._notified_event_keys.intersection_update(active_event_keys)
+        self._auto_opened_event_keys.intersection_update(active_event_keys)
         sent_immediately = 0
+        auto_open_sent_immediately = 0
+        auto_open_scheduled = 0
+        auto_open_grace_period = timedelta(seconds=60)
 
         for event in events:
             if event.is_all_day:
@@ -90,10 +96,40 @@ class Notifier:
             timer.start()
             self._scheduled_timers[timer_key] = timer
 
+        if self.config.auto_open_meeting_on_start:
+            for event in events:
+                if event.is_all_day or not event.meeting_url:
+                    continue
+
+                timer_key = self._event_key(event)
+                if timer_key in self._auto_opened_event_keys:
+                    continue
+
+                if event.start_time <= now <= event.start_time + auto_open_grace_period:
+                    self._open_meeting_by_key(timer_key, event)
+                    auto_open_sent_immediately += 1
+                    continue
+
+                if event.start_time <= now:
+                    continue
+
+                delay = (event.start_time - now).total_seconds()
+                open_timer = threading.Timer(
+                    delay,
+                    self._open_meeting_by_key,
+                    args=[timer_key, event],
+                )
+                open_timer.daemon = True
+                open_timer.start()
+                self._meeting_open_timers[timer_key] = open_timer
+                auto_open_scheduled += 1
+
         logger.info(
-            "%d 件の通知をスケジュールしました (即時通知=%d)",
+            "%d 件の通知をスケジュールしました (即時通知=%d, 自動起動=%d, 自動起動即時=%d)",
             len(self._scheduled_timers),
             sent_immediately,
+            auto_open_scheduled,
+            auto_open_sent_immediately,
         )
 
     def _send_notification_by_key(self, timer_key: str, event: Event):
@@ -103,6 +139,23 @@ class Notifier:
         finally:
             self._notified_event_keys.add(timer_key)
             self._scheduled_timers.pop(timer_key, None)
+
+    def _open_meeting_by_key(self, timer_key: str, event: Event):
+        """タイマー経由で会議 URL を自動起動（送信済み管理付き）"""
+        try:
+            if not event.meeting_url:
+                return
+            if datetime.now() >= event.end_time:
+                logger.info("会議の自動起動をスキップ（終了時刻超過）: %s", event.title)
+                return
+            try:
+                self._open_meeting_osascript(event.meeting_url)
+                logger.info("会議を自動起動: %s", event.title)
+            except Exception as e:
+                logger.error("会議の自動起動に失敗: %s", e)
+        finally:
+            self._auto_opened_event_keys.add(timer_key)
+            self._meeting_open_timers.pop(timer_key, None)
 
     def _send_notification(self, event: Event):
         """macOS 通知を送信"""
@@ -183,8 +236,17 @@ class Notifier:
         except Exception as e:
             logger.error(f"osascript 通知エラー: {e}")
 
+    def _open_meeting_osascript(self, meeting_url: str):
+        """osascript で会議 URL を開く。"""
+        safe_url = meeting_url.replace('"', '\\"')
+        script = f'open location "{safe_url}"'
+        subprocess.run(["osascript", "-e", script], capture_output=True, check=True)
+
     def cancel_all(self):
         """全タイマーをキャンセル"""
         for timer in self._scheduled_timers.values():
             timer.cancel()
         self._scheduled_timers.clear()
+        for timer in self._meeting_open_timers.values():
+            timer.cancel()
+        self._meeting_open_timers.clear()
