@@ -1,172 +1,105 @@
-# CalBar - macOS メニューバー Google カレンダー通知アプリ
+# CalBar - macOS メニューバー カレンダー通知アプリ
 
-macOS のメニューバーに常駐し、Google カレンダーの予定をリアルタイムで表示・通知するデスクトップアプリケーション。
-Playwright で Google カレンダーから予定を取得し、次のミーティング情報をメニューバーに常時表示します。
+macOS のメニューバーに常駐して次の予定と残り時間を表示し、開始前に通知するアプリです。
+v2 では SwiftUI のネイティブアプリとして作り直し、予定は macOS のカレンダーデータベース（EventKit）から読みます。
+Google カレンダーは、macOS のカレンダーに Google アカウントを追加すれば表示されます。
 
 ## 機能
 
-- **メニューバー常駐表示** — 次の予定の時刻・タイトル・残り時間を常時表示
-- **当日予定一覧** — メニューバークリックでドロップダウン表示
-- **日付ナビゲーション** — 前日 / 今日 / 翌日の切り替え
-- **事前通知** — 予定の N 分前に macOS 通知（デフォルト 5 分）
-- **会議 URL ワンクリック起動** — 通知クリックで Google Meet / Zoom / Teams を自動起動
-- **会議開始時の自動起動（任意）** — 設定で有効化すると、開始時刻に Meet URL を自動で開く
-- **終日予定の表示** — 一覧の先頭に「終日」ラベル付きで表示
-- **オフライン対応** — ネットワーク不通時はキャッシュデータを表示
-- **設定画面** — 通知タイミング・取得間隔をカスタマイズ
-
-## 表示イメージ
-
-```
-📅 14:00 Weekly Standup (15分後)
-┌───────────────────────────────┐
-│  ── 2026年2月14日（土）──       │
-│  🟢 [終日] チームビルディング Day │
-│  ─────────────────────        │
-│  09:00 - 09:30  朝会           │
-│  14:00 - 15:00  Weekly Standup 🔗 │
-│  16:30 - 17:00  1on1 with Tanaka 🔗 │
-│  ─────────────────────        │
-│  ◀ 前日 │ 今日 │ 翌日 ▶       │
-│  ─────────────────────        │
-│  🔄 今すぐ更新                  │
-│  ⚙ 設定...                    │
-│  終了                          │
-└───────────────────────────────┘
-```
+- **メニューバー表示**: 次の予定のタイトルと「15分後」、会議中は「残り12分」を表示します。次の予定が 5 分以内に迫ると、終わりかけの会議より次の予定を優先して表示します。
+- **予定パネル**: メニューバーをクリックすると、進行中・次の予定のカード（進捗バーと参加ボタン付き）と、その日のタイムラインを表示します。
+- **タイムライン**: カレンダーの色、場所、出欠（仮・未回答・辞退）、15 分以上の空き時間、現在時刻の線を表示します。終わった予定は薄く表示します。
+- **日付の移動**: 前の日・今日・次の日に切り替えられます。今日の予定が終わった後は、明日の最初の予定を表示します。
+- **会議への参加**: Google Meet / Zoom / Teams / Webex の URL を予定の URL 欄・場所・メモから見つけて、「参加」ボタンを出します。
+- **ショートカット ⌃⌥J**: どのアプリを使っていても、進行中または 5 分以内に始まる会議に参加できます。
+- **通知**: 開始の N 分前に macOS の通知を出します。通知には「参加する」「開始1分前に再通知」のボタンが付きます。
+- **自動参加（任意）**: 開始時刻に会議 URL を自動で開きます。
+- **リアルタイム反映**: カレンダーが変わると、ポーリングを待たずにすぐ反映します。
+- **設定画面**: 通知タイミング、メニューバーの表示形式、表示するカレンダー、ログイン時の起動などを変更できます。
 
 ## 必要環境
 
-- macOS 12 (Monterey) 以降
-- Python 3.11+
-- [terminal-notifier](https://github.com/julienXX/terminal-notifier)（推奨、なくても動作可）
+- macOS 15 (Sequoia) 以降
+- Swift 6 ツールチェーン（Xcode または Command Line Tools）
+- macOS のカレンダーに追加した Google アカウント（システム設定 > インターネットアカウント）
 
-## セットアップ
-
-### uv を使う場合（推奨）
-
-依存関係は PEP 723 インラインメタデータで `main.py` に記述済みのため、`uv run` だけで起動できます。
+## ビルドとインストール
 
 ```bash
-# 1. リポジトリのクローン
-git clone <repo-url> && cd google-calender-schedule-notification
-
-# 2. Playwright ブラウザインストール（初回のみ）
-uv run --with playwright playwright install chromium
-
-# 3. terminal-notifier（通知用、推奨）
-brew install terminal-notifier
-
-# 4. 起動
-uv run calbar/main.py
+scripts/build-app.sh install
 ```
 
-### 手動 venv の場合
+`build/CalBar.app` をビルドして `/Applications/CalBar.app` を置き換え、起動します。
+旧 Python 版も同じバンドル ID（`com.calbar.app`）なので、起動中なら終了させてから置き換えます。
+ビルドだけ行う場合は `scripts/build-app.sh` を引数なしで実行してください。
+
+初回起動時に、カレンダーと通知へのアクセス許可を求められます。どちらも許可してください。
+アプリはアドホック署名なので、再ビルドすると macOS が別のアプリとみなし、もう一度許可を求めることがあります。
+
+## 開発
 
 ```bash
-# 1. リポジトリのクローン
-git clone <repo-url> && cd google-calender-schedule-notification
+# ロジック（CalBarCore）のチェックを実行
+swift run CalBarCoreChecks
 
-# 2. Python 仮想環境
-cd calbar
-python3 -m venv .venv
-source .venv/bin/activate
+# 画面をサンプルデータで PNG に書き出す（デバッグビルドのみ）
+swift build && .build/debug/CalBar --render-previews /tmp/calbar-previews
 
-# 3. 依存パッケージ
-pip install -r requirements.txt
-
-# 4. Playwright ブラウザインストール
-playwright install chromium
-
-# 5. terminal-notifier（通知用、推奨）
-brew install terminal-notifier
-
-# 6. 起動
-python main.py
+# 動作ログを見る
+/usr/bin/log stream --predicate 'subsystem == "com.calbar.app"' --info
 ```
 
-## 初回起動時の認証
-
-初回起動時、Google アカウントへのログインが必要です。
-
-1. アプリが Chromium ブラウザを可視モードで起動します
-2. 表示されたブラウザで Google アカウントにログインしてください
-3. Google カレンダーが表示されたら認証完了です（ブラウザは自動で閉じます）
-4. 以降はセッションが `~/.calbar/browser_profile` に保存され、再認証なしで動作します
-
-## 設定
-
-設定は `~/.calbar/config.json` に保存されます。メニューの「⚙ 設定...」から変更できます。
-
-| 項目 | デフォルト値 | 説明 |
-|------|-----------|------|
-| `notification_minutes_before` | `5` | 予定の何分前に通知するか（0〜60） |
-| `fetch_interval_minutes` | `5` | カレンダーの自動取得間隔（1〜30 分） |
-| `auto_open_meeting_on_start` | `false` | 会議開始時刻に Meet URL を自動で開くか |
-| `show_all_day_events` | `true` | 終日予定を表示するか |
-| `max_title_length_menubar` | `30` | メニューバーのタイトル文字数上限 |
+Command Line Tools だけの環境では Swift Testing と XCTest が使えません。
+そのため、チェックは `Tests/CalBarCoreTests` に置いた実行ファイルとして動かします。
 
 ## ディレクトリ構成
 
 ```
-calbar/
-├── main.py                  # エントリーポイント
-├── app.py                   # メニューバー UI（rumps.App）
-├── calendar_fetcher.py      # Playwright による Google Calendar スクレイピング
-├── event_parser.py          # スクレイピング結果 → Event 変換
-├── notifier.py              # macOS 通知の発行・会議 URL 起動
-├── scheduler.py             # 定期取得のタイマー管理・キャッシュ
-├── config.py                # 設定の読み書き（JSON）
-├── models.py                # データモデル定義
-├── utils.py                 # ヘルパー関数
-├── resources/               # メニューバーアイコン等
-├── requirements.txt
-└── setup.py                 # py2app 設定
+Package.swift
+Sources/
+├── CalBarCore/              # UI と OS に依存しないロジック
+│   ├── Meeting.swift        # 予定のモデル
+│   ├── MeetingLink.swift    # 会議 URL の抽出
+│   ├── DayAgenda.swift      # 進行中・次の予定・参加対象・空き時間
+│   ├── Countdown.swift      # 「15分後」などの表記と表示幅の計算
+│   └── MenuBarStatus.swift  # メニューバーに出す内容
+└── CalBar/                  # アプリ本体
+    ├── CalBarApp.swift      # MenuBarExtra と設定ウィンドウ
+    ├── AppModel.swift       # 状態管理・再読み込み・自動参加
+    ├── CalendarService.swift    # EventKit からの読み込み
+    ├── NotificationService.swift # 通知とアクション
+    ├── GlobalHotKey.swift   # ⌃⌥J
+    ├── Preferences.swift    # 設定（UserDefaults）
+    ├── PreviewRenderer.swift # 画面の PNG 書き出し（デバッグ用）
+    └── Views/
+Tests/CalBarCoreTests/       # CalBarCore のチェック
+Resources/                   # Info.plist とアイコン
+scripts/build-app.sh         # .app のビルドとインストール
 ```
 
-## .app バンドルの作成
+## 設定
 
-```bash
-# 1. Playwright ブラウザをインストール（初回のみ）
-uv run --with playwright playwright install chromium
+設定は UserDefaults（`com.calbar.app`）に保存されます。
+初回起動時に、旧版の `~/.calbar/config.json` から通知タイミング・自動参加・終日予定の表示を引き継ぎます。
 
-# 2. terminal-notifier をインストール（通知クリックで URL 起動する場合は必須）
-brew install terminal-notifier
+| 項目 | 初期値 |
+|------|--------|
+| 通知のタイミング | 5 分前（開始時刻・1・3・5・10・15 分前から選択） |
+| 開始時刻に会議 URL を自動で開く | オフ |
+| メニューバーの表示内容 | タイトルと残り時間（開始時刻と残り時間・アイコンのみも選択可） |
+| タイトルの長さ | 短め（ノッチのあるメニューバーで隠れにくくするため） |
+| 終日の予定 / 辞退した予定 / 空き時間の表示 | 表示 / 非表示 / 表示 |
+| 表示するカレンダー | 誕生日以外のすべて |
+| ⌃⌥J で次の会議に参加 | オン |
 
-# 3. .app バンドルをビルド
-# uv を使う場合
-uv run setup.py py2app
+## v1（Python 版）からの変更点
 
-# または手動 venv の場合
-cd calbar
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install py2app
-python setup.py py2app
-```
+v1 は Playwright で Google カレンダーの画面を読み取っていましたが、v2 では EventKit に置き換えました。
+v1 には次の問題があり、画面の読み取りを続ける限り根本的には解決できなかったためです。
 
-`dist/CalBar.app` が生成されます。
+- 画面の表示が遅いと未ログインと判定され、ログイン用のブラウザが繰り返し開いていました。
+- 終日予定が誤検出され、会議 URL が別の予定のものと取り違えられることがありました。
+- 予定を 1 件ずつクリックして詳細を読むため、1 回の取得に約 40 秒かかっていました。
 
-**注意:**
-- `.app` バンドルは、システムにインストールされた Playwright ブラウザ（`~/.cache/ms-playwright`）を参照します
-- `.app` 実行前に `playwright install chromium` でブラウザをインストールしてください
-- `.app` 実行前に `terminal-notifier` をインストールしてください（通知クリックで Meet/Zoom を開くため）
-
-## 技術スタック
-
-| レイヤー | 技術 |
-|---------|------|
-| 言語 | Python 3.11+ |
-| メニューバー UI | [rumps](https://github.com/jaredks/rumps) |
-| カレンダー取得 | [Playwright](https://playwright.dev/python/) (Chromium) |
-| 通知 | terminal-notifier / osascript フォールバック |
-| データ永続化 | JSON ファイル (`~/.calbar/`) |
-| パッケージング | py2app |
-
-## 既知の制約
-
-- Google Calendar の DOM 構造が変更されるとスクレイピングが壊れる可能性があります（aria-label / role ベースのセレクタで対策済み）
-- Playwright ヘッドレス動作時のメモリ消費は 100〜200MB 程度です
-- 2FA / CAPTCHA が必要な場合は初回手動認証が必要です
-- v1 では単一 Google アカウントのみ対応しています
+v1 のソースコードは Git の履歴に残っています。
+`~/.calbar/` 配下のファイル（ブラウザのプロファイル、キャッシュ、ログ）は v2 では使わないため、不要なら削除してかまいません。
