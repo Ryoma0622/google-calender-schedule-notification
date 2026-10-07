@@ -149,6 +149,14 @@ struct MenuBarStatusTests {
         expect(empty.phase == .idle)
     }
 
+    func timeStylesShowStartThenEnd() {
+        expect(status(at(13, 45), .timeAndTitle).text == "14:00 Weekly Standup")
+        expect(status(at(13, 45), .timeOnly).text == "14:00")
+        expect(status(at(14, 20), .timeAndTitle) == MenuBarStatus(phase: .inProgress, text: "〜15:00 Weekly Standup"))
+        expect(status(at(14, 20), .timeOnly).text == "〜15:00")
+        expect(status(at(14, 56), .timeOnly) == MenuBarStatus(phase: .imminent, text: "15:00"))
+    }
+
     func iconOnlyHasNoText() {
         expect(status(at(13, 45), .iconOnly).text.isEmpty)
     }

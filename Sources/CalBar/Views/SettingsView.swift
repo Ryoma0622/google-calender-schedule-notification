@@ -30,7 +30,9 @@ struct SettingsView: View {
             Section("メニューバー") {
                 Picker("表示内容", selection: $preferences.menuBarStyle) {
                     Text("タイトルと残り時間").tag(MenuBarStyle.titleAndCountdown)
+                    Text("開始時刻とタイトル").tag(MenuBarStyle.timeAndTitle)
                     Text("開始時刻と残り時間").tag(MenuBarStyle.timeAndCountdown)
+                    Text("開始時刻のみ").tag(MenuBarStyle.timeOnly)
                     Text("アイコンのみ").tag(MenuBarStyle.iconOnly)
                 }
                 Picker("タイトルの長さ", selection: $preferences.titleLength) {
@@ -38,7 +40,7 @@ struct SettingsView: View {
                         Text(length.label).tag(length)
                     }
                 }
-                .disabled(preferences.menuBarStyle != .titleAndCountdown)
+                .disabled(!preferences.menuBarStyle.showsTitle)
             }
 
             Section("予定リスト") {

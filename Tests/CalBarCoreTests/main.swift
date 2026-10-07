@@ -37,6 +37,7 @@ let status = MenuBarStatusTests()
 status.upcomingShowsNextMeeting()
 status.inProgressShowsRemainingUntilNextIsImminent()
 status.finishedAndIdle()
+status.timeStylesShowStartThenEnd()
 status.iconOnlyHasNoText()
 
 print("\(checks - failures)/\(checks) checks passed")

@@ -1,11 +1,19 @@
 import Foundation
 
 public enum MenuBarStyle: String, CaseIterable, Sendable {
-    /// "Weekly Standup · 15分後"
+    /// "Weekly Standup · 15分後"; in a meeting "Weekly Standup · 残り12分"
     case titleAndCountdown
-    /// "14:00 · 15分後"
+    /// "14:00 Weekly Standup"; in a meeting "〜15:00 Weekly Standup"
+    case timeAndTitle
+    /// "14:00 · 15分後"; in a meeting "残り12分"
     case timeAndCountdown
+    /// "14:00"; in a meeting "〜15:00"
+    case timeOnly
     case iconOnly
+
+    public var showsTitle: Bool {
+        self == .titleAndCountdown || self == .timeAndTitle
+    }
 }
 
 /// What the menu bar item shows for a moment in the day.
@@ -50,7 +58,9 @@ public struct MenuBarStatus: Equatable, Sendable {
             let countdown = Countdown.untilStart(minutesToNext)
             let text = switch style {
             case .titleAndCountdown: "\(title(next)) · \(countdown)"
+            case .timeAndTitle: "\(clock(next.start, calendar)) \(title(next))"
             case .timeAndCountdown: "\(clock(next.start, calendar)) · \(countdown)"
+            case .timeOnly: clock(next.start, calendar)
             case .iconOnly: ""
             }
             return MenuBarStatus(phase: minutesToNext <= imminentMinutes ? .imminent : .upcoming, text: text)
@@ -60,7 +70,9 @@ public struct MenuBarStatus: Equatable, Sendable {
             let remaining = Countdown.remaining(Countdown.minutes(until: current.end, from: now))
             let text = switch style {
             case .titleAndCountdown: "\(title(current)) · \(remaining)"
+            case .timeAndTitle: "〜\(clock(current.end, calendar)) \(title(current))"
             case .timeAndCountdown: remaining
+            case .timeOnly: "〜\(clock(current.end, calendar))"
             case .iconOnly: ""
             }
             return MenuBarStatus(phase: .inProgress, text: text)
